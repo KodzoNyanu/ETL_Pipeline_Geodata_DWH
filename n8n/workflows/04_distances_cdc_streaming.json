@@ -1,0 +1,1031 @@
+{
+  "updatedAt": "2026-05-27T10:29:57.990Z",
+  "createdAt": "2026-05-25T18:03:08.285Z",
+  "id": "wf04-distances-cdc-v2",
+  "name": "04 - Bronze | Distance Matrix → MinIO (CDC + Historisé)",
+  "description": null,
+  "active": true,
+  "isArchived": false,
+  "nodes": [
+    {
+      "id": "04188fff-665b-48d4-839f-9d65e2ce946e",
+      "name": "Schedule 08h00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        100,
+        300
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 8 * * *"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "bc34cab6-3022-4794-86c8-653d06381fed",
+      "name": "Lire salesshipmentheader (staging)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        300,
+        300
+      ],
+      "parameters": {
+        "jsCode": "const fs = require('fs');\nconst hdrs = JSON.parse(fs.readFileSync('/staging/database/salesshipmentheader.json','utf8'));\nconst rows = hdrs.data || [];\n// Paires uniques origin / destination avec nom du destinataire\nconst seen = new Set();\nconst pairs = [];\nfor (const r of rows) {\n  const origin = (r.location_code && r.location_code.trim())\n    ? r.location_code.trim() + ', France'\n    : 'Marseille, France';\n  const dest = [r.ship_to_city, r.ship_to_country].filter(Boolean).join(', ');\n  const key  = `${origin}||${dest}`;\n  if (!seen.has(key) && (r.ship_to_city || r.ship_to_name)) {\n    seen.add(key);\n    pairs.push({\n      origin,\n      destination : dest,\n      name        : r.ship_to_name || '',\n      order_id    : r.shipment_no  || r.no || ''\n    });\n  }\n}\nconsole.log(`[WF-04] ${pairs.length} paires O/D extraites du staging`);\nreturn pairs.map(p => ({ json: p }));\n"
+      }
+    },
+    {
+      "id": "ref-adresses-magasins-001",
+      "name": "Référentiel adresses magasins",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        520,
+        300
+      ],
+      "parameters": {
+        "jsCode": "// ── Référentiel statique des adresses de magasins ──────────────────\nconst MAGASINS = {\n  'magasin jaune': '12 Rue de la Gare, 1000 Lausanne',\n  'magasin vert' : '5 Avenue des Alpes, 1201 Genève',\n  'magasin rouge': '8 Rue du Marché, 2000 Neuchâtel',\n  'magasin blanc': '3 Place de la Gare, 1700 Fribourg'\n};\n\nconst enriched = $input.all().map(item => {\n  const nomNorm      = (item.json.name || '').toLowerCase().trim();\n  const destExistante = (item.json.destination || '').trim();\n\n  // Règle : garde l'adresse API si non vide, sinon cherche dans le référentiel\n  const destination = destExistante !== ''\n    ? destExistante\n    : (MAGASINS[nomNorm] || null);\n\n  const address_source = destExistante !== ''\n    ? 'api'\n    : (MAGASINS[nomNorm] ? 'referentiel' : 'inconnu');\n\n  return { json: { ...item.json, destination, address_source } };\n});\n\n// Ignorer les paires sans destination résolue (évite des appels Google inutiles)\nconst valid = enriched.filter(i => i.json.destination && i.json.destination.trim() !== '');\nconst ignored = enriched.length - valid.length;\n\nconsole.log(\n  `[WF-04] Enrichissement adresses : ${enriched.length} paires → `\n  + `${valid.length} valides | `\n  + `${enriched.filter(i => i.json.address_source === 'referentiel').length} depuis référentiel | `\n  + `${ignored} ignorées (destination nulle)`\n);\n\nreturn valid;\n"
+      }
+    },
+    {
+      "id": "97f70912-9f99-4870-97f5-88cafc14e90d",
+      "name": "Dédupliquer paires O/D",
+      "type": "n8n-nodes-base.removeDuplicates",
+      "typeVersion": 1,
+      "position": [
+        740,
+        300
+      ],
+      "parameters": {
+        "compare": "selectedFields",
+        "disableDotNotation": false,
+        "options": {},
+        "fieldsToCompare": "origin,destination"
+      }
+    },
+    {
+      "id": "568172ad-b050-4c58-a0b7-8c9c408d89c5",
+      "name": "Split — 1 paire à la fois",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        960,
+        300
+      ],
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      }
+    },
+    {
+      "id": "01ff8f7a-428a-482e-b3aa-a9d0e58563d9",
+      "name": "Google Distance Matrix API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1200,
+        300
+      ],
+      "parameters": {
+        "url": "https://maps.googleapis.com/maps/api/distancematrix/json",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "origins",
+              "value": "={{ $json.origin }}"
+            },
+            {
+              "name": "destinations",
+              "value": "={{ $json.destination }}"
+            },
+            {
+              "name": "key",
+              "value": "={{ $vars.GOOGLE_MAPS_KEY }}"
+            },
+            {
+              "name": "units",
+              "value": "metric"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 15000
+        }
+      }
+    },
+    {
+      "id": "a2635ce0-ff43-458a-a116-2db9e1d7a9c4",
+      "name": "Parser réponse Google",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1440,
+        300
+      ],
+      "parameters": {
+        "jsCode": "const api  = $input.first().json;\nlet pair;\ntry { pair = $('Split — 1 paire à la fois').item.json; } catch(e) { pair = {}; }\nconst elem   = api?.rows?.[0]?.elements?.[0] || {};\nconst status = elem.status || 'UNKNOWN';\nreturn [{ json: {\n  origin_query        : pair.origin          || '',\n  destination_query   : pair.destination     || '',\n  origin_address      : api?.origin_addresses?.[0]      || '',\n  destination_address : api?.destination_addresses?.[0] || '',\n  distance_meters     : status === 'OK' ? (elem.distance?.value || null) : null,\n  duration_seconds    : status === 'OK' ? (elem.duration?.value || null) : null,\n  element_status      : status,\n  api_status          : api?.status || 'UNKNOWN',\n  retrieved_at        : new Date().toISOString(),\n  order_id            : pair.order_id      || '',\n  name                : pair.name          || '',\n  address_source      : pair.address_source || 'api'\n}}];"
+      }
+    },
+    {
+      "id": "1f7a92fb-cd65-4513-ae83-5a72faf29c8b",
+      "name": "Agréger tous les résultats",
+      "type": "n8n-nodes-base.aggregate",
+      "typeVersion": 1,
+      "position": [
+        1680,
+        300
+      ],
+      "parameters": {
+        "aggregate": "aggregateAllItemData",
+        "destinationFieldName": "distance_results",
+        "options": {}
+      }
+    },
+    {
+      "id": "5967c272-148a-4ce1-8458-79515b51f055",
+      "name": "CDC — Hash distances",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1920,
+        300
+      ],
+      "parameters": {
+        "jsCode": "const crypto = require('crypto');\nconst fs     = require('fs');\n\nfunction readChecksum(key) {\n  const file = `/staging/_metadata/checksums/${key}.json`;\n  try { return JSON.parse(fs.readFileSync(file, 'utf8')); }\n  catch(e) { return { hash: null }; }\n}\n\nfunction versionedPaths(prefix, filename) {\n  const now = new Date();\n  const y   = now.getFullYear();\n  const m   = String(now.getMonth()+1).padStart(2,'0');\n  const d   = String(now.getDate()).padStart(2,'0');\n  const hh  = String(now.getHours()).padStart(2,'0');\n  const mm  = String(now.getMinutes()).padStart(2,'0');\n  const ts  = `${y}${m}${d}_${hh}${mm}`;\n  return {\n    versioned : `${prefix}/${y}/${m}/${d}/${ts}/${filename}`,\n    latest    : `${prefix}/latest/${filename}`,\n    timestamp : now.toISOString()\n  };\n}\n\nconst allResults  = $input.all().flatMap(i => i.json.distance_results || [i.json]).filter(Boolean);\nconst payload     = JSON.stringify({ metadata: { generated_at: new Date().toISOString(), count: allResults.length }, data: allResults });\nconst buf         = Buffer.from(payload, 'utf8');\nconst currentHash = crypto.createHash('md5').update(buf).digest('hex');\nconst { hash: storedHash } = readChecksum('distances');\nconst paths       = versionedPaths('raw/enrichment/distances', 'distance_matrix.json');\n\nconsole.log(`[CDC:distances] ${allResults.length} entrées | hash=${currentHash.substr(0,8)}… changé=${currentHash !== storedHash}`);\n\nconst binAttach = { data: buf.toString('base64'), mimeType:'application/json', fileName:'distance_matrix.json' };\nreturn [{\n  json: {\n    currentHash, storedHash,\n    hashChanged  : currentHash !== storedHash,\n    versionedKey : paths.versioned,\n    latestKey    : paths.latest,\n    timestamp    : paths.timestamp,\n    count        : allResults.length\n  },\n  binary: { distData: binAttach }\n}];\n"
+      }
+    },
+    {
+      "id": "cf1fc841-41c0-4a9a-bcab-441442237c5d",
+      "name": "Distances modifiées ?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        2160,
+        300
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "096a9677-47cd-448c-8597-0cea69230977",
+              "leftValue": "={{ $json.hashChanged }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "33f24fe3-224a-47b7-accb-ea501646ba21",
+      "name": "MinIO Versionné — distances",
+      "type": "n8n-nodes-base.s3",
+      "typeVersion": 1,
+      "position": [
+        2400,
+        180
+      ],
+      "credentials": {
+        "s3": {
+          "id": "Iqpe5A6QfeoXeIZR",
+          "name": "MinIO S3 (path-style)"
+        }
+      },
+      "parameters": {
+        "operation": "upload",
+        "bucketName": "bronze",
+        "fileName": "={{ $json.versionedKey }}",
+        "binaryData": true,
+        "binaryPropertyName": "distData",
+        "additionalFields": {
+          "acl": "private"
+        }
+      }
+    },
+    {
+      "id": "acabdc4f-318a-4561-8829-ffa9dfb3ea71",
+      "name": "MinIO latest — distances",
+      "type": "n8n-nodes-base.s3",
+      "typeVersion": 1,
+      "position": [
+        2640,
+        180
+      ],
+      "credentials": {
+        "s3": {
+          "id": "Iqpe5A6QfeoXeIZR",
+          "name": "MinIO S3 (path-style)"
+        }
+      },
+      "parameters": {
+        "operation": "upload",
+        "bucketName": "bronze",
+        "fileName": "={{ $json.latestKey }}",
+        "binaryData": true,
+        "binaryPropertyName": "distData",
+        "additionalFields": {
+          "acl": "private"
+        }
+      }
+    },
+    {
+      "id": "ee1a740c-c4dc-4cc5-8fb1-422018f3b452",
+      "name": "Stage+Checksum — distances",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2880,
+        180
+      ],
+      "parameters": {
+        "jsCode": "const fs = require('fs');\n\nfunction saveChecksum(key, hash, meta) {\n  const dir = '/staging/_metadata/checksums';\n  fs.mkdirSync(dir, { recursive: true });\n  fs.writeFileSync(`${dir}/${key}.json`,\n    JSON.stringify({ hash, updatedAt: new Date().toISOString(), ...meta }, null, 2));\n}\n\nconst item = $input.first();\n// Récupérer le binaire depuis le nœud CDC (perdu après les 2 uploads S3)\nconst cdcBinary = $('CDC — Hash distances').first().binary;\nif (!cdcBinary || !cdcBinary.distData) {\n  throw new Error('[WF-04] Binaire distData introuvable dans CDC — Hash distances');\n}\nconst buf = Buffer.from(cdcBinary.distData.data, 'base64');\nfs.mkdirSync('/staging/enrichment', { recursive: true });\nfs.writeFileSync('/staging/enrichment/distance_matrix.json', buf);\nsaveChecksum('distances', item.json.currentHash, {\n  count: item.json.count, versionedKey: item.json.versionedKey\n});\nconsole.log(`[WF-04] ✅ distance_matrix.json stagé (${item.json.count} entrées) → ${item.json.versionedKey}`);\nreturn [{ json: { status:'success', count: item.json.count, versionedKey: item.json.versionedKey } }];"
+      }
+    },
+    {
+      "id": "72c0e0e6-4152-43b8-b534-162710b512e5",
+      "name": "Skip — distances inchangées",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2400,
+        420
+      ],
+      "parameters": {
+        "jsCode": "console.log('[WF-04] ⏭️ distances inchangées — pas d\\'upload');\nreturn [{ json: { status:'skipped' }}];"
+      }
+    },
+    {
+      "id": "ewt-wf04-001",
+      "name": "Déclencheur sous-workflow",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1,
+      "position": [
+        100,
+        500
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "restaurer-distdata-001",
+      "name": "Restaurer distData",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2520,
+        180
+      ],
+      "parameters": {
+        "jsCode": "const cdcNode = 'CDC — Hash distances';\nconst cdcOut = $('CDC — Hash distances').first();\nconst s3Out = $input.first();\nif (!cdcOut.binary || !cdcOut.binary.distData) {\n  throw new Error('[WF-04] Binaire distData introuvable dans CDC — Hash distances');\n}\nreturn [{ json: { ...s3Out.json }, binary: cdcOut.binary }];"
+      }
+    }
+  ],
+  "connections": {
+    "Lire salesshipmentheader (staging)": {
+      "main": [
+        [
+          {
+            "node": "Référentiel adresses magasins",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Référentiel adresses magasins": {
+      "main": [
+        [
+          {
+            "node": "Dédupliquer paires O/D",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Dédupliquer paires O/D": {
+      "main": [
+        [
+          {
+            "node": "Split — 1 paire à la fois",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split — 1 paire à la fois": {
+      "main": [
+        [
+          {
+            "node": "CDC — Hash distances",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Google Distance Matrix API",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Distance Matrix API": {
+      "main": [
+        [
+          {
+            "node": "Parser réponse Google",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parser réponse Google": {
+      "main": [
+        [
+          {
+            "node": "Split — 1 paire à la fois",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Agréger tous les résultats",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Agréger tous les résultats": {
+      "main": [
+        [
+          {
+            "node": "CDC — Hash distances",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CDC — Hash distances": {
+      "main": [
+        [
+          {
+            "node": "Distances modifiées ?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Distances modifiées ?": {
+      "main": [
+        [
+          {
+            "node": "MinIO Versionné — distances",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Skip — distances inchangées",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "MinIO Versionné — distances": {
+      "main": [
+        [
+          {
+            "node": "Restaurer distData",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "MinIO latest — distances": {
+      "main": [
+        [
+          {
+            "node": "Stage+Checksum — distances",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Schedule 08h00": {
+      "main": [
+        [
+          {
+            "node": "Lire salesshipmentheader (staging)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Déclencheur sous-workflow": {
+      "main": [
+        [
+          {
+            "node": "Lire salesshipmentheader (staging)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Restaurer distData": {
+      "main": [
+        [
+          {
+            "node": "MinIO latest — distances",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": {
+    "node:Schedule 08h00": {
+      "recurrenceRules": []
+    }
+  },
+  "meta": null,
+  "pinData": {},
+  "versionId": "a1b2c3d4-0004-0000-b003-000000000001",
+  "activeVersionId": null,
+  "versionCounter": 42,
+  "triggerCount": 1,
+  "shared": [
+    {
+      "updatedAt": "2026-05-25T18:03:08.292Z",
+      "createdAt": "2026-05-25T18:03:08.292Z",
+      "role": "workflow:owner",
+      "workflowId": "wf04-distances-cdc-v2",
+      "projectId": "D6rGpkzR0jYLSPsp",
+      "project": {
+        "updatedAt": "2026-05-25T14:02:32.458Z",
+        "createdAt": "2026-05-24T21:29:20.943Z",
+        "id": "D6rGpkzR0jYLSPsp",
+        "name": "nyanu kodzo <nyanuks@s2.rpn.ch>",
+        "type": "personal",
+        "icon": null,
+        "description": null,
+        "creatorId": "7c7b6869-4924-4d3d-b16d-7d13908b06b2"
+      }
+    }
+  ],
+  "tags": [],
+  "activeVersion": {
+    "updatedAt": "2026-05-27T10:29:57.992Z",
+    "createdAt": "2026-05-27T10:29:57.992Z",
+    "versionId": "7c6219c4-2c7f-47e6-a6ae-c65d7764b806",
+    "workflowId": "wf04-distances-cdc-v2",
+    "nodes": [
+      {
+        "id": "04188fff-665b-48d4-839f-9d65e2ce946e",
+        "name": "Schedule 08h00",
+        "type": "n8n-nodes-base.scheduleTrigger",
+        "typeVersion": 1.2,
+        "position": [
+          100,
+          300
+        ],
+        "parameters": {
+          "rule": {
+            "interval": [
+              {
+                "field": "cronExpression",
+                "expression": "0 8 * * *"
+              }
+            ]
+          }
+        }
+      },
+      {
+        "id": "bc34cab6-3022-4794-86c8-653d06381fed",
+        "name": "Lire salesshipmentheader (staging)",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          300,
+          300
+        ],
+        "parameters": {
+          "jsCode": "const fs = require('fs');\nconst hdrs = JSON.parse(fs.readFileSync('/staging/database/salesshipmentheader.json','utf8'));\nconst rows = hdrs.data || [];\n// Paires uniques origin / destination avec nom du destinataire\nconst seen = new Set();\nconst pairs = [];\nfor (const r of rows) {\n  const origin = (r.location_code && r.location_code.trim())\n    ? r.location_code.trim() + ', France'\n    : 'Marseille, France';\n  const dest = [r.ship_to_city, r.ship_to_country].filter(Boolean).join(', ');\n  const key  = `${origin}||${dest}`;\n  if (!seen.has(key) && (r.ship_to_city || r.ship_to_name)) {\n    seen.add(key);\n    pairs.push({\n      origin,\n      destination : dest,\n      name        : r.ship_to_name || '',\n      order_id    : r.shipment_no  || r.no || ''\n    });\n  }\n}\nconsole.log(`[WF-04] ${pairs.length} paires O/D extraites du staging`);\nreturn pairs.map(p => ({ json: p }));\n"
+        }
+      },
+      {
+        "id": "ref-adresses-magasins-001",
+        "name": "Référentiel adresses magasins",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          520,
+          300
+        ],
+        "parameters": {
+          "jsCode": "// ── Référentiel statique des adresses de magasins ──────────────────\nconst MAGASINS = {\n  'magasin jaune': '12 Rue de la Gare, 1000 Lausanne',\n  'magasin vert' : '5 Avenue des Alpes, 1201 Genève',\n  'magasin rouge': '8 Rue du Marché, 2000 Neuchâtel',\n  'magasin blanc': '3 Place de la Gare, 1700 Fribourg'\n};\n\nconst enriched = $input.all().map(item => {\n  const nomNorm      = (item.json.name || '').toLowerCase().trim();\n  const destExistante = (item.json.destination || '').trim();\n\n  // Règle : garde l'adresse API si non vide, sinon cherche dans le référentiel\n  const destination = destExistante !== ''\n    ? destExistante\n    : (MAGASINS[nomNorm] || null);\n\n  const address_source = destExistante !== ''\n    ? 'api'\n    : (MAGASINS[nomNorm] ? 'referentiel' : 'inconnu');\n\n  return { json: { ...item.json, destination, address_source } };\n});\n\n// Ignorer les paires sans destination résolue (évite des appels Google inutiles)\nconst valid = enriched.filter(i => i.json.destination && i.json.destination.trim() !== '');\nconst ignored = enriched.length - valid.length;\n\nconsole.log(\n  `[WF-04] Enrichissement adresses : ${enriched.length} paires → `\n  + `${valid.length} valides | `\n  + `${enriched.filter(i => i.json.address_source === 'referentiel').length} depuis référentiel | `\n  + `${ignored} ignorées (destination nulle)`\n);\n\nreturn valid;\n"
+        }
+      },
+      {
+        "id": "97f70912-9f99-4870-97f5-88cafc14e90d",
+        "name": "Dédupliquer paires O/D",
+        "type": "n8n-nodes-base.removeDuplicates",
+        "typeVersion": 1,
+        "position": [
+          740,
+          300
+        ],
+        "parameters": {
+          "compare": "selectedFields",
+          "disableDotNotation": false,
+          "options": {},
+          "fieldsToCompare": "origin,destination"
+        }
+      },
+      {
+        "id": "568172ad-b050-4c58-a0b7-8c9c408d89c5",
+        "name": "Split — 1 paire à la fois",
+        "type": "n8n-nodes-base.splitInBatches",
+        "typeVersion": 3,
+        "position": [
+          960,
+          300
+        ],
+        "parameters": {
+          "batchSize": 1,
+          "options": {}
+        }
+      },
+      {
+        "id": "01ff8f7a-428a-482e-b3aa-a9d0e58563d9",
+        "name": "Google Distance Matrix API",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          1200,
+          300
+        ],
+        "parameters": {
+          "url": "https://maps.googleapis.com/maps/api/distancematrix/json",
+          "sendQuery": true,
+          "queryParameters": {
+            "parameters": [
+              {
+                "name": "origins",
+                "value": "={{ $json.origin }}"
+              },
+              {
+                "name": "destinations",
+                "value": "={{ $json.destination }}"
+              },
+              {
+                "name": "key",
+                "value": "={{ $vars.GOOGLE_MAPS_KEY }}"
+              },
+              {
+                "name": "units",
+                "value": "metric"
+              }
+            ]
+          },
+          "options": {
+            "timeout": 15000
+          }
+        }
+      },
+      {
+        "id": "a2635ce0-ff43-458a-a116-2db9e1d7a9c4",
+        "name": "Parser réponse Google",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          1440,
+          300
+        ],
+        "parameters": {
+          "jsCode": "const api  = $input.first().json;\nlet pair;\ntry { pair = $('Split — 1 paire à la fois').item.json; } catch(e) { pair = {}; }\nconst elem   = api?.rows?.[0]?.elements?.[0] || {};\nconst status = elem.status || 'UNKNOWN';\nreturn [{ json: {\n  origin_query        : pair.origin          || '',\n  destination_query   : pair.destination     || '',\n  origin_address      : api?.origin_addresses?.[0]      || '',\n  destination_address : api?.destination_addresses?.[0] || '',\n  distance_meters     : status === 'OK' ? (elem.distance?.value || null) : null,\n  duration_seconds    : status === 'OK' ? (elem.duration?.value || null) : null,\n  element_status      : status,\n  api_status          : api?.status || 'UNKNOWN',\n  retrieved_at        : new Date().toISOString(),\n  order_id            : pair.order_id      || '',\n  name                : pair.name          || '',\n  address_source      : pair.address_source || 'api'\n}}];"
+        }
+      },
+      {
+        "id": "1f7a92fb-cd65-4513-ae83-5a72faf29c8b",
+        "name": "Agréger tous les résultats",
+        "type": "n8n-nodes-base.aggregate",
+        "typeVersion": 1,
+        "position": [
+          1680,
+          300
+        ],
+        "parameters": {
+          "aggregate": "aggregateAllItemData",
+          "destinationFieldName": "distance_results",
+          "options": {}
+        }
+      },
+      {
+        "id": "5967c272-148a-4ce1-8458-79515b51f055",
+        "name": "CDC — Hash distances",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          1920,
+          300
+        ],
+        "parameters": {
+          "jsCode": "const crypto = require('crypto');\nconst fs     = require('fs');\n\nfunction readChecksum(key) {\n  const file = `/staging/_metadata/checksums/${key}.json`;\n  try { return JSON.parse(fs.readFileSync(file, 'utf8')); }\n  catch(e) { return { hash: null }; }\n}\n\nfunction versionedPaths(prefix, filename) {\n  const now = new Date();\n  const y   = now.getFullYear();\n  const m   = String(now.getMonth()+1).padStart(2,'0');\n  const d   = String(now.getDate()).padStart(2,'0');\n  const hh  = String(now.getHours()).padStart(2,'0');\n  const mm  = String(now.getMinutes()).padStart(2,'0');\n  const ts  = `${y}${m}${d}_${hh}${mm}`;\n  return {\n    versioned : `${prefix}/${y}/${m}/${d}/${ts}/${filename}`,\n    latest    : `${prefix}/latest/${filename}`,\n    timestamp : now.toISOString()\n  };\n}\n\nconst allResults  = $input.all().flatMap(i => i.json.distance_results || [i.json]).filter(Boolean);\nconst payload     = JSON.stringify({ metadata: { generated_at: new Date().toISOString(), count: allResults.length }, data: allResults });\nconst buf         = Buffer.from(payload, 'utf8');\nconst currentHash = crypto.createHash('md5').update(buf).digest('hex');\nconst { hash: storedHash } = readChecksum('distances');\nconst paths       = versionedPaths('raw/enrichment/distances', 'distance_matrix.json');\n\nconsole.log(`[CDC:distances] ${allResults.length} entrées | hash=${currentHash.substr(0,8)}… changé=${currentHash !== storedHash}`);\n\nconst binAttach = { data: buf.toString('base64'), mimeType:'application/json', fileName:'distance_matrix.json' };\nreturn [{\n  json: {\n    currentHash, storedHash,\n    hashChanged  : currentHash !== storedHash,\n    versionedKey : paths.versioned,\n    latestKey    : paths.latest,\n    timestamp    : paths.timestamp,\n    count        : allResults.length\n  },\n  binary: { distData: binAttach }\n}];\n"
+        }
+      },
+      {
+        "id": "cf1fc841-41c0-4a9a-bcab-441442237c5d",
+        "name": "Distances modifiées ?",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 2,
+        "position": [
+          2160,
+          300
+        ],
+        "parameters": {
+          "conditions": {
+            "options": {
+              "caseSensitive": true,
+              "leftValue": "",
+              "typeValidation": "strict"
+            },
+            "conditions": [
+              {
+                "id": "096a9677-47cd-448c-8597-0cea69230977",
+                "leftValue": "={{ $json.hashChanged }}",
+                "rightValue": true,
+                "operator": {
+                  "type": "boolean",
+                  "operation": "true"
+                }
+              }
+            ],
+            "combinator": "and"
+          }
+        }
+      },
+      {
+        "id": "33f24fe3-224a-47b7-accb-ea501646ba21",
+        "name": "MinIO Versionné — distances",
+        "type": "n8n-nodes-base.s3",
+        "typeVersion": 1,
+        "position": [
+          2400,
+          180
+        ],
+        "credentials": {
+          "s3": {
+            "id": "Iqpe5A6QfeoXeIZR",
+            "name": "MinIO S3 (path-style)"
+          }
+        },
+        "parameters": {
+          "operation": "upload",
+          "bucketName": "bronze",
+          "fileName": "={{ $json.versionedKey }}",
+          "binaryData": true,
+          "binaryPropertyName": "distData",
+          "additionalFields": {
+            "acl": "private"
+          }
+        }
+      },
+      {
+        "id": "acabdc4f-318a-4561-8829-ffa9dfb3ea71",
+        "name": "MinIO latest — distances",
+        "type": "n8n-nodes-base.s3",
+        "typeVersion": 1,
+        "position": [
+          2640,
+          180
+        ],
+        "credentials": {
+          "s3": {
+            "id": "Iqpe5A6QfeoXeIZR",
+            "name": "MinIO S3 (path-style)"
+          }
+        },
+        "parameters": {
+          "operation": "upload",
+          "bucketName": "bronze",
+          "fileName": "={{ $json.latestKey }}",
+          "binaryData": true,
+          "binaryPropertyName": "distData",
+          "additionalFields": {
+            "acl": "private"
+          }
+        }
+      },
+      {
+        "id": "ee1a740c-c4dc-4cc5-8fb1-422018f3b452",
+        "name": "Stage+Checksum — distances",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          2880,
+          180
+        ],
+        "parameters": {
+          "jsCode": "const fs = require('fs');\n\nfunction saveChecksum(key, hash, meta) {\n  const dir = '/staging/_metadata/checksums';\n  fs.mkdirSync(dir, { recursive: true });\n  fs.writeFileSync(`${dir}/${key}.json`,\n    JSON.stringify({ hash, updatedAt: new Date().toISOString(), ...meta }, null, 2));\n}\n\nconst item = $input.first();\n// Récupérer le binaire depuis le nœud CDC (perdu après les 2 uploads S3)\nconst cdcBinary = $('CDC — Hash distances').first().binary;\nif (!cdcBinary || !cdcBinary.distData) {\n  throw new Error('[WF-04] Binaire distData introuvable dans CDC — Hash distances');\n}\nconst buf = Buffer.from(cdcBinary.distData.data, 'base64');\nfs.mkdirSync('/staging/enrichment', { recursive: true });\nfs.writeFileSync('/staging/enrichment/distance_matrix.json', buf);\nsaveChecksum('distances', item.json.currentHash, {\n  count: item.json.count, versionedKey: item.json.versionedKey\n});\nconsole.log(`[WF-04] ✅ distance_matrix.json stagé (${item.json.count} entrées) → ${item.json.versionedKey}`);\nreturn [{ json: { status:'success', count: item.json.count, versionedKey: item.json.versionedKey } }];"
+        }
+      },
+      {
+        "id": "72c0e0e6-4152-43b8-b534-162710b512e5",
+        "name": "Skip — distances inchangées",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          2400,
+          420
+        ],
+        "parameters": {
+          "jsCode": "console.log('[WF-04] ⏭️ distances inchangées — pas d\\'upload');\nreturn [{ json: { status:'skipped' }}];"
+        }
+      },
+      {
+        "id": "ewt-wf04-001",
+        "name": "Déclencheur sous-workflow",
+        "type": "n8n-nodes-base.executeWorkflowTrigger",
+        "typeVersion": 1,
+        "position": [
+          100,
+          500
+        ],
+        "parameters": {}
+      },
+      {
+        "id": "restaurer-distdata-001",
+        "name": "Restaurer distData",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          2520,
+          180
+        ],
+        "parameters": {
+          "jsCode": "const cdcNode = 'CDC — Hash distances';\nconst cdcOut = $('CDC — Hash distances').first();\nconst s3Out = $input.first();\nif (!cdcOut.binary || !cdcOut.binary.distData) {\n  throw new Error('[WF-04] Binaire distData introuvable dans CDC — Hash distances');\n}\nreturn [{ json: { ...s3Out.json }, binary: cdcOut.binary }];"
+        }
+      },
+      {
+        "id": "hop-trigger-streaming-001",
+        "name": "Déclencher ETL Temps Réel",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          3160,
+          180
+        ],
+        "parameters": {
+          "url": "http://172.18.0.2:9999/run-etl",
+          "method": "POST",
+          "options": {
+            "timeout": 300000
+          }
+        }
+      }
+    ],
+    "connections": {
+      "Lire salesshipmentheader (staging)": {
+        "main": [
+          [
+            {
+              "node": "Référentiel adresses magasins",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Référentiel adresses magasins": {
+        "main": [
+          [
+            {
+              "node": "Dédupliquer paires O/D",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Dédupliquer paires O/D": {
+        "main": [
+          [
+            {
+              "node": "Split — 1 paire à la fois",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Split — 1 paire à la fois": {
+        "main": [
+          [
+            {
+              "node": "CDC — Hash distances",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Google Distance Matrix API",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Google Distance Matrix API": {
+        "main": [
+          [
+            {
+              "node": "Parser réponse Google",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Parser réponse Google": {
+        "main": [
+          [
+            {
+              "node": "Split — 1 paire à la fois",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Agréger tous les résultats",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Agréger tous les résultats": {
+        "main": [
+          [
+            {
+              "node": "CDC — Hash distances",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "CDC — Hash distances": {
+        "main": [
+          [
+            {
+              "node": "Distances modifiées ?",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Distances modifiées ?": {
+        "main": [
+          [
+            {
+              "node": "MinIO Versionné — distances",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Skip — distances inchangées",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "MinIO Versionné — distances": {
+        "main": [
+          [
+            {
+              "node": "Restaurer distData",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "MinIO latest — distances": {
+        "main": [
+          [
+            {
+              "node": "Stage+Checksum — distances",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Schedule 08h00": {
+        "main": [
+          [
+            {
+              "node": "Lire salesshipmentheader (staging)",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Déclencheur sous-workflow": {
+        "main": [
+          [
+            {
+              "node": "Lire salesshipmentheader (staging)",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Restaurer distData": {
+        "main": [
+          [
+            {
+              "node": "MinIO latest — distances",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Stage+Checksum — distances": {
+        "main": [
+          [
+            {
+              "node": "Déclencher ETL Temps Réel",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      }
+    },
+    "authors": "nyanu kodzo",
+    "name": null,
+    "description": null,
+    "autosaved": false,
+    "workflowPublishHistory": [
+      {
+        "createdAt": "2026-05-27T10:29:58.100Z",
+        "id": 58,
+        "workflowId": "wf04-distances-cdc-v2",
+        "versionId": "7c6219c4-2c7f-47e6-a6ae-c65d7764b806",
+        "event": "activated",
+        "userId": "7c7b6869-4924-4d3d-b16d-7d13908b06b2"
+      },
+      {
+        "createdAt": "2026-05-27T10:29:58.061Z",
+        "id": 57,
+        "workflowId": "wf04-distances-cdc-v2",
+        "versionId": "7c6219c4-2c7f-47e6-a6ae-c65d7764b806",
+        "event": "deactivated",
+        "userId": "7c7b6869-4924-4d3d-b16d-7d13908b06b2"
+      }
+    ]
+  }
+}

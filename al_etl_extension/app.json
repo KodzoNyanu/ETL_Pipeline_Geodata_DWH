@@ -1,0 +1,25 @@
+{
+  "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "name": "ETL Pipeline Warehouse",
+  "publisher": "etlpipeline",
+  "version": "1.0.0.0",
+  "brief": "ETL Warehouse integration tables and OData API pages",
+  "description": "Custom tables and OData API pages for the ETL Gold DWH to BC sync pipeline.",
+  "privacyStatement": "",
+  "EULA": "",
+  "help": "",
+  "url": "",
+  "logo": "",
+  "dependencies": [],
+  "screenshots": [],
+  "platform": "1.0.0.0",
+  "application": "26.0.0.0",
+  "idRanges": [
+    {
+      "from": 50100,
+      "to": 50110
+    }
+  ],
+  "target": "OnPrem",
+  "runtime": "13.0"
+}

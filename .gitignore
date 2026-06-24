@@ -1,0 +1,23 @@
+# Volumes runtime — trop lourds et non versionnables
+n8n_data/
+staging/
+minio/
+metabase_data/
+postgres_gold/
+data_sources/
+
+# Credentials & secrets
+.env
+*.env
+*.key
+*.pem
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Fichiers lock LibreOffice
+docs/.~lock.*

@@ -1,0 +1,140 @@
+# ═══════════════════════════════════════════════════════════════
+#  ETL_Projet — Docker Compose (Version Linux Optimisée)
+# ═══════════════════════════════════════════════════════════════
+
+networks:
+  etl_network:
+    driver: bridge
+    name: etl_network
+    ipam:
+      config:
+        - subnet: 172.18.0.0/16
+          gateway: 172.18.0.1
+
+services:
+
+  # ─── MinIO — Data Lake Bronze ────────────────────────────────
+  minio:
+    image: minio/minio:latest
+    container_name: datalake_minio
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - /home/nyanu/Documents/ETL_Projet/minio/data:/data
+    environment:
+      MINIO_ROOT_USER: nyanu
+      MINIO_ROOT_PASSWORD: nyanu1234
+    command: server /data --console-address ":9001"
+    restart: unless-stopped
+    networks:
+      etl_network:
+        ipv4_address: 172.18.0.3
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 10s
+
+  # ─── n8n — Orchestrateur d'ingestion ─────────────────────────
+  n8n:
+    image: docker.n8n.io/n8nio/n8n:latest
+    container_name: ingestion_n8n
+    ports:
+      - "5678:5678"
+    volumes:
+      - /home/nyanu/Documents/ETL_Projet/n8n_data:/home/node/.n8n
+      - /home/nyanu/Documents/ETL_Projet/data_sources:/data_sources
+      - /home/nyanu/Documents/ETL_Projet/staging:/staging
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+      - "bc2025:10.14.210.119"
+    environment:
+      - N8N_HOST=0.0.0.0
+      - N8N_PORT=5678
+      - NODE_ENV=production
+      - N8N_ENCRYPTION_KEY=nyanu_secret_key_99
+      - WEBHOOK_URL=http://localhost:5678/
+      - GENERIC_TIMEZONE=Europe/Paris
+      - TZ=Europe/Paris
+      - NODE_FUNCTION_ALLOW_BUILTIN=fs,path,crypto,os,http,https,net
+      - NODE_FUNCTION_ALLOW_EXTERNAL=pg
+      - N8N_NODE_FUNCTION_TIMEOUT=1800000
+      - N8N_RUNNERS_TASK_TIMEOUT=3600
+      - GPS_WEBHOOK_SECRET=26c2e2da982cb418046bd47709a96faf152f5b075ca5b9bfa3fa63f2ad1a62b6
+      - N8N_BLOCK_ENV_ACCESS_IN_NODE=false
+      - N8N_RUNNERS_MAX_OLD_SPACE_SIZE=512
+      - N8N_SECURE_COOKIE=false
+    restart: unless-stopped
+    networks:
+      etl_network:
+        ipv4_address: 172.18.0.5
+    depends_on:
+      minio:
+        condition: service_healthy
+
+  # ─── Apache Hop Web — Transformation Silver/Gold ────────────
+  apache-hop:
+    image: apache/hop-web:latest
+    container_name: transform_hop
+    ports:
+      - "8080:8080"
+    volumes:
+      - /home/nyanu/Documents/ETL_Projet/apache_hop_data:/project
+      - /home/nyanu/Documents/ETL_Projet/staging:/staging
+      - /home/nyanu/Documents/ETL_Projet/hop_start.sh:/hop_start.sh:ro
+    entrypoint: ["/bin/bash", "/hop_start.sh"]
+    environment:
+      - HOP_PROJECT_NAME=ETL_Projet
+      - HOP_PROJECT_FOLDER=/project
+      - HOP_PROJECT_CONFIG_FILE_NAME=project-config.json
+      - HOP_ENVIRONMENT_NAME=local
+      - HOP_LOG_LEVEL=Basic
+      - HOP_WEB_THEME=light
+    restart: unless-stopped
+    networks:
+      etl_network:
+        ipv4_address: 172.18.0.2
+
+  # ─── BC NTLM Proxy — Relay NTLM vers Business Central ───────
+  bc_ntlm_proxy:
+    build: ./bc_ntlm_proxy
+    container_name: bc_ntlm_proxy
+    ports:
+      - "3128:3128"
+    restart: unless-stopped
+    extra_hosts:
+      - "bc2025:10.14.210.119"
+    networks:
+      etl_network:
+        ipv4_address: 172.18.0.8
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:3128/BC260/api/v2.0/companies')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+  # ─── PostgreSQL Gold — Data Warehouse cible ──────────────────
+  postgres_gold:
+    image: postgres:16
+    container_name: dwh_postgres
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_USER: nyanu
+      POSTGRES_PASSWORD: nyanu
+      POSTGRES_DB: data_warehouse_gold
+    volumes:
+      - /home/nyanu/Documents/ETL_Projet/postgres_gold/data:/var/lib/postgresql/data
+    restart: unless-stopped
+    networks:
+      etl_network:
+        ipv4_address: 172.18.0.4
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nyanu -d data_warehouse_gold"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s

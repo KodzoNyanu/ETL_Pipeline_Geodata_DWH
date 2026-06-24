@@ -1,0 +1,280 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<pipeline>
+  <info>
+    <name>07_fact_ecommerce_lines</name>
+    <name_sync_with_filename>Y</name_sync_with_filename>
+    <description>Charge les faits e-commerce depuis /staging/flat_files/data.csv vers PostgreSQL Gold (rechargement complet)</description>
+    <pipeline_type>Normal</pipeline_type>
+    <parameters></parameters>
+    <created_user>etl</created_user>
+    <created_date>2026/05/25 00:00:00.000</created_date>
+    <modified_user>etl</modified_user>
+    <modified_date>2026/05/25 00:00:00.000</modified_date>
+  </info>
+  <notepads></notepads>
+  <order>
+    <hop><from>Read from silver.ecommerce_lines</from><to>Parse and Compute Fields</to><enabled>Y</enabled></hop>
+    <hop><from>Parse and Compute Fields</from><to>Select Output Fields</to><enabled>Y</enabled></hop>
+    <hop><from>Select Output Fields</from><to>Load fact_ecommerce_lines</to><enabled>Y</enabled></hop>
+  </order>
+
+  <!-- STEP 1: Read CSV as all-string fields — avoids CSVInput type parsing bugs -->
+  <!-- Source CSV: InvoiceNo,StockCode,Description,Quantity,InvoiceDate,UnitPrice,CustomerID,Country -->
+    <!-- Lire depuis la couche Silver (PostgreSQL) -->
+  <transform>
+    <name>Read from silver.ecommerce_lines</name>
+    <type>TableInput</type>
+    <distribute>Y</distribute>
+    <copies>1</copies>
+    <partitioning><method>none</method><schema_name/></partitioning>
+    <connection>postgres_gold</connection>
+    <sql>SELECT
+  invoice_no   AS "InvoiceNo",
+  stock_code   AS "StockCode",
+  description  AS "Description",
+  quantity     AS "Quantity",
+  invoice_date AS "InvoiceDate",
+  unit_price   AS "UnitPrice",
+  customer_id  AS "CustomerID",
+  country      AS "Country"
+FROM silver.ecommerce_lines</sql>
+    <limit>0</limit>
+    <lookup/>
+    <execute_each_row>N</execute_each_row>
+    <variables_active>N</variables_active>
+    <lazy_conversion_active>N</lazy_conversion_active>
+    <attributes/>
+    <GUI><xloc>100</xloc><yloc>200</yloc></GUI>
+  </transform>
+
+  <!-- STEP 2: Parse types and compute derived fields in JavaScript -->
+  <transform>
+    <name>Parse and Compute Fields</name>
+    <type>ScriptValueMod</type>
+    <distribute>Y</distribute>
+    <copies>1</copies>
+    <partitioning><method>none</method><schema_name/></partitioning>
+    <jsScripts>
+      <jsScript>
+        <jsScript_type>0</jsScript_type>
+        <jsScript_name>Parse and Compute Fields</jsScript_name>
+        <jsScript_script>
+// Initialise all output fields to null — safe fallback
+var qty_out = null, price_out = null, total_amount = null, invoice_date = null;
+var invoice_no = null, stock_code = null, desc_out = null, customer_id = null;
+var ctry_out = null, country_iso2 = null;
+
+// Helper: sanitise string (remove NUL bytes / control chars using Java replaceAll)
+function cleanStr(s) {
+    if (s == null) return null;
+    try {
+        var js = new java.lang.String(s.toString());
+        js = js.replaceAll("[\\x00-\\x08\\x0B\\x0C\\x0E-\\x1F]", " ");
+        var t = js.trim();
+        return (t.length() == 0) ? null : t + "";
+    } catch(ex) {
+        return s.toString().trim();
+    }
+}
+
+try {
+    // Numeric fields
+    if (Quantity != null) {
+        var qs = Quantity.toString().trim().replace(",", ".");
+        if (qs != "") {
+            var qv = parseFloat(qs);
+            if (!isNaN(qv)) qty_out = qv;
+        }
+    }
+    if (UnitPrice != null) {
+        var ps = UnitPrice.toString().trim().replace(",", ".");
+        if (ps != "") {
+            var pv = parseFloat(ps);
+            if (!isNaN(pv)) price_out = pv;
+        }
+    }
+    total_amount = (qty_out != null &amp;&amp; price_out != null)
+        ? Math.round(qty_out * price_out * 10000.0) / 10000.0
+        : null;
+
+    // Date field: format "8/12/2011 15:22" = M/d/yyyy H:mm
+    if (InvoiceDate != null &amp;&amp; InvoiceDate.toString().trim() != "") {
+        try {
+            var fmt = new java.text.SimpleDateFormat("M/d/yyyy H:mm");
+            invoice_date = fmt.parse(InvoiceDate.toString().trim());
+        } catch(dateErr) {
+            invoice_date = null;
+        }
+    }
+
+    // Country ISO2 lookup
+    var cmap = { "United Kingdom":"GB","France":"FR","Germany":"DE","Netherlands":"NL",
+        "Belgium":"BE","Spain":"ES","Portugal":"PT","Italy":"IT","Switzerland":"CH",
+        "Austria":"AT","Denmark":"DK","Finland":"FI","Norway":"NO","Sweden":"SE",
+        "Poland":"PL","Czech Republic":"CZ","Hungary":"HU","Greece":"GR","Cyprus":"CY",
+        "Malta":"MT","Lithuania":"LT","Latvia":"LV","Estonia":"EE","Iceland":"IS",
+        "Israel":"IL","United States":"US","Canada":"CA","Australia":"AU","Japan":"JP",
+        "Singapore":"SG","Brazil":"BR","South Africa":"ZA","EIRE":"IE",
+        "European Community":"EU","Channel Islands":"JE","Hong Kong":"HK","RSA":"ZA" };
+    var cstr = (Country != null) ? Country.toString().trim() : "";
+    country_iso2 = cmap[cstr] || null;
+    ctry_out = (cstr != "") ? cleanStr(cstr) : null;
+
+    // String fields with NUL-byte sanitisation
+    invoice_no  = cleanStr(InvoiceNo);
+    stock_code  = cleanStr(StockCode);
+    desc_out    = cleanStr(Description);
+    customer_id = cleanStr(CustomerID);
+} catch(err) {
+    // On any unexpected error: output whatever strings we can
+    try { invoice_no  = cleanStr(InvoiceNo);  } catch(ex) {}
+    try { stock_code  = cleanStr(StockCode);  } catch(ex) {}
+}
+        </jsScript_script>
+      </jsScript>
+    </jsScripts>
+    <fields>
+      <field>
+        <name>invoice_no</name>
+        <rename>invoice_no</rename>
+        <type>String</type>
+        <length>100</length>
+        <precision>-1</precision>
+        <replace>N</replace>
+      </field>
+      <field>
+        <name>stock_code</name>
+        <rename>stock_code</rename>
+        <type>String</type>
+        <length>100</length>
+        <precision>-1</precision>
+        <replace>N</replace>
+      </field>
+      <field>
+        <name>desc_out</name>
+        <rename>desc_out</rename>
+        <type>String</type>
+        <length>255</length>
+        <precision>-1</precision>
+        <replace>N</replace>
+      </field>
+      <field>
+        <name>qty_out</name>
+        <rename>qty_out</rename>
+        <type>BigNumber</type>
+        <length>15</length>
+        <precision>4</precision>
+        <replace>N</replace>
+      </field>
+      <field>
+        <name>price_out</name>
+        <rename>price_out</rename>
+        <type>BigNumber</type>
+        <length>15</length>
+        <precision>4</precision>
+        <replace>N</replace>
+      </field>
+      <field>
+        <name>invoice_date</name>
+        <rename>invoice_date</rename>
+        <type>Date</type>
+        <length>-1</length>
+        <precision>-1</precision>
+        <replace>N</replace>
+      </field>
+      <field>
+        <name>customer_id</name>
+        <rename>customer_id</rename>
+        <type>String</type>
+        <length>100</length>
+        <precision>-1</precision>
+        <replace>N</replace>
+      </field>
+      <field>
+        <name>ctry_out</name>
+        <rename>ctry_out</rename>
+        <type>String</type>
+        <length>255</length>
+        <precision>-1</precision>
+        <replace>N</replace>
+      </field>
+      <field>
+        <name>country_iso2</name>
+        <rename>country_iso2</rename>
+        <type>String</type>
+        <length>2</length>
+        <precision>-1</precision>
+        <replace>N</replace>
+      </field>
+      <field>
+        <name>total_amount</name>
+        <rename>total_amount</rename>
+        <type>BigNumber</type>
+        <length>15</length>
+        <precision>4</precision>
+        <replace>N</replace>
+      </field>
+    </fields>
+    <attributes/>
+    <GUI><xloc>380</xloc><yloc>200</yloc></GUI>
+  </transform>
+
+  <!-- STEP 3: Remove original CSV fields; keep only typed/computed output fields -->
+  <transform>
+    <name>Select Output Fields</name>
+    <type>SelectValues</type>
+    <distribute>Y</distribute>
+    <copies>1</copies>
+    <partitioning><method>none</method><schema_name/></partitioning>
+    <fields>
+      <field><name>invoice_no</name><rename/><length>-2</length><precision>-2</precision></field>
+      <field><name>stock_code</name><rename/><length>-2</length><precision>-2</precision></field>
+      <field><name>desc_out</name><rename>description</rename><length>-2</length><precision>-2</precision></field>
+      <field><name>qty_out</name><rename>quantity</rename><length>-2</length><precision>-2</precision></field>
+      <field><name>price_out</name><rename>unit_price</rename><length>-2</length><precision>-2</precision></field>
+      <field><name>invoice_date</name><rename/><length>-2</length><precision>-2</precision></field>
+      <field><name>customer_id</name><rename/><length>-2</length><precision>-2</precision></field>
+      <field><name>ctry_out</name><rename>country</rename><length>-2</length><precision>-2</precision></field>
+      <field><name>country_iso2</name><rename/><length>-2</length><precision>-2</precision></field>
+      <field><name>total_amount</name><rename/><length>-2</length><precision>-2</precision></field>
+      <select_unspecified>N</select_unspecified>
+    </fields>
+    <attributes/>
+    <GUI><xloc>560</xloc><yloc>200</yloc></GUI>
+  </transform>
+
+  <!-- STEP 4: Full reload — truncate then insert into fact_ecommerce_lines -->
+  <transform>
+    <name>Load fact_ecommerce_lines</name>
+    <type>TableOutput</type>
+    <distribute>Y</distribute>
+    <copies>1</copies>
+    <partitioning><method>none</method><schema_name/></partitioning>
+    <connection>postgres_gold</connection>
+    <schema>public</schema>
+    <table>fact_ecommerce_lines</table>
+    <commit>1000</commit>
+    <truncate>Y</truncate>
+    <ignore>N</ignore>
+    <onlyWhenHaveRows>N</onlyWhenHaveRows>
+    <return_keys>N</return_keys>
+    <return_field/>
+    <fields>
+      <field><column_name>invoice_no</column_name><stream_name>invoice_no</stream_name></field>
+      <field><column_name>stock_code</column_name><stream_name>stock_code</stream_name></field>
+      <field><column_name>description</column_name><stream_name>description</stream_name></field>
+      <field><column_name>quantity</column_name><stream_name>quantity</stream_name></field>
+      <field><column_name>unit_price</column_name><stream_name>unit_price</stream_name></field>
+      <field><column_name>invoice_date</column_name><stream_name>invoice_date</stream_name></field>
+      <field><column_name>customer_id</column_name><stream_name>customer_id</stream_name></field>
+      <field><column_name>country</column_name><stream_name>country</stream_name></field>
+      <field><column_name>country_iso2</column_name><stream_name>country_iso2</stream_name></field>
+      <field><column_name>total_amount</column_name><stream_name>total_amount</stream_name></field>
+    </fields>
+    <attributes/>
+    <GUI><xloc>740</xloc><yloc>200</yloc></GUI>
+  </transform>
+
+  <transform_error_handling></transform_error_handling>
+  <attributes/>
+</pipeline>

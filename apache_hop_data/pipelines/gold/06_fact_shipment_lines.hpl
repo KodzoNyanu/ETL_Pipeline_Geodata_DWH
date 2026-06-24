@@ -1,0 +1,127 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<pipeline>
+  <info>
+    <name>06_fact_shipment_lines</name>
+    <name_sync_with_filename>Y</name_sync_with_filename>
+    <description>Charge les faits lignes d'expédition depuis /staging/database/salesshipmentline.json vers PostgreSQL Gold (rechargement complet)</description>
+    <pipeline_type>Normal</pipeline_type>
+    <parameters></parameters>
+    <created_user>etl</created_user>
+    <created_date>2026/05/25 00:00:00.000</created_date>
+    <modified_user>etl</modified_user>
+    <modified_date>2026/05/25 00:00:00.000</modified_date>
+  </info>
+  <notepads></notepads>
+  <order>
+    <hop><from>Read from silver.salesshipmentline</from><to>Load fact_shipment_lines</to><enabled>Y</enabled></hop>
+  </order>
+
+  <!-- STEP 1: Read from staging JSON file produced by n8n WF-03 -->
+  <!-- NOTE: Adjust JSONPaths if source column names differ.
+       Common Business Central sales shipment line field names:
+         document_no: document_no
+         line_no: line_no
+         article_id (item no): no
+         quantity: quantity
+         uom_code: unit_of_measure_code
+         gross_weight: gross_weight
+         net_weight: net_weight
+         unit_volume: unit_volume
+         location_code: location_code
+         shipment_date: posting_date or shipment_date
+  -->
+    <!-- Lire depuis la couche Silver (PostgreSQL) -->
+  <transform>
+    <name>Read from silver.salesshipmentline</name>
+    <type>TableInput</type>
+    <distribute>Y</distribute>
+    <copies>1</copies>
+    <partitioning><method>none</method><schema_name/></partitioning>
+    <connection>postgres_gold</connection>
+    <sql>SELECT
+  document_no,
+  CAST(line_no AS INTEGER) AS line_no,
+  item_no AS article_id,
+  CAST(NULLIF(quantity,'') AS NUMERIC(18,6)) AS quantity,
+  unit_of_measure_code AS uom_code,
+  CAST(NULLIF(gross_weight,'') AS NUMERIC(18,4)) AS gross_weight,
+  CAST(NULLIF(net_weight,'') AS NUMERIC(18,4)) AS net_weight,
+  CAST(NULLIF(unit_volume,'') AS NUMERIC(18,4)) AS unit_volume,
+  location_code,
+  CAST(NULLIF(posting_date,'') AS DATE) AS shipment_date
+FROM silver.salesshipmentline</sql>
+    <limit>0</limit>
+    <lookup/>
+    <execute_each_row>N</execute_each_row>
+    <variables_active>N</variables_active>
+    <lazy_conversion_active>N</lazy_conversion_active>
+    <attributes/>
+    <GUI><xloc>100</xloc><yloc>200</yloc></GUI>
+  </transform>
+
+  <!-- STEP 2: Full reload — truncate then insert into fact_shipment_lines -->
+  <!-- Note: fact_shipment_lines has SERIAL PK (id), full reload on each ETL run. -->
+  <transform>
+    <name>Load fact_shipment_lines</name>
+    <type>TableOutput</type>
+    <distribute>Y</distribute>
+    <copies>1</copies>
+    <partitioning><method>none</method><schema_name/></partitioning>
+    <connection>postgres_gold</connection>
+    <schema>public</schema>
+    <table>fact_shipment_lines</table>
+    <commit>1000</commit>
+    <truncate>Y</truncate>
+    <ignore>Y</ignore>
+    <onlyWhenHaveRows>N</onlyWhenHaveRows>
+    <return_keys>N</return_keys>
+    <return_field/>
+    <fields>
+      <field>
+        <column_name>document_no</column_name>
+        <stream_name>document_no</stream_name>
+      </field>
+      <field>
+        <column_name>line_no</column_name>
+        <stream_name>line_no</stream_name>
+      </field>
+      <field>
+        <column_name>article_id</column_name>
+        <stream_name>article_id</stream_name>
+      </field>
+      <field>
+        <column_name>quantity</column_name>
+        <stream_name>quantity</stream_name>
+      </field>
+      <field>
+        <column_name>uom_code</column_name>
+        <stream_name>uom_code</stream_name>
+      </field>
+      <field>
+        <column_name>gross_weight</column_name>
+        <stream_name>gross_weight</stream_name>
+      </field>
+      <field>
+        <column_name>net_weight</column_name>
+        <stream_name>net_weight</stream_name>
+      </field>
+      <field>
+        <column_name>unit_volume</column_name>
+        <stream_name>unit_volume</stream_name>
+      </field>
+      <field>
+        <column_name>location_code</column_name>
+        <stream_name>location_code</stream_name>
+      </field>
+      <field>
+        <column_name>shipment_date</column_name>
+        <stream_name>shipment_date</stream_name>
+      </field>
+    </fields>
+    <attributes/>
+    <GUI><xloc>420</xloc><yloc>200</yloc></GUI>
+  </transform>
+
+  <transform_error_handling></transform_error_handling>
+  <attributes/>
+</pipeline>

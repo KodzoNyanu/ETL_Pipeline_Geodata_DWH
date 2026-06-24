@@ -1,0 +1,906 @@
+{
+  "updatedAt": "2026-05-27T09:21:34.590Z",
+  "createdAt": "2026-05-25T18:03:04.618Z",
+  "id": "wf03-pg-cdc-v2",
+  "name": "03 - Bronze | PostgreSQL Windows → MinIO (Direct, Base Statique)",
+  "description": null,
+  "active": true,
+  "isArchived": false,
+  "nodes": [
+    {
+      "id": "cde17bbe-2306-4796-aebf-85712fdd91c1",
+      "name": "Schedule Toutes les 30 min",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        112,
+        304
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "*/30 * * * *"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "ewt-wf03-pg-cdc-v2-001",
+      "name": "Déclencheur sous-workflow",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1,
+      "position": [
+        112,
+        512
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "pg-simple-clients-001",
+      "name": "Requête PG — clients",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        380,
+        304
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Connexion directe PostgreSQL via 10.14.219.2:5433\nconst { Client } = require('pg');\nconst client = new Client({\n  host    : '10.14.219.2',\n  port    : 5433,\n  database: 'database_extern_local',\n  user    : 'postgres',\n  password: 'postgres',\n  connectionTimeoutMillis: 10000,\n  statement_timeout      : 30000\n});\nawait client.connect();\nconst res = await client.query('SELECT row_to_json(t) AS r FROM \\\"clients\\\" t');\nawait client.end();\nconst rows = res.rows.map(row => row.r);\nconst payload = JSON.stringify({ data: rows });\nconst buf = Buffer.from(payload, 'utf8');\nconsole.log('[WF-03] PG clients : ' + rows.length + ' lignes');\nreturn [{\n  json: { table: 'clients', rowCount: rows.length, key: 'raw/database/clients/latest/clients.json' },\n  binary: { tableData: { data: buf.toString('base64'), mimeType: 'application/json', fileName: 'clients.json' } }\n}];"
+      }
+    },
+    {
+      "id": "s3-bronze-clients-001",
+      "name": "MinIO Bronze — clients",
+      "type": "n8n-nodes-base.s3",
+      "typeVersion": 1,
+      "position": [
+        660,
+        304
+      ],
+      "parameters": {
+        "operation": "upload",
+        "bucketName": "bronze",
+        "fileName": "={{ $json.key }}",
+        "binaryPropertyName": "tableData",
+        "additionalFields": {
+          "acl": "private"
+        },
+        "binaryData": true
+      },
+      "credentials": {
+        "s3": {
+          "id": "Iqpe5A6QfeoXeIZR",
+          "name": "MinIO S3 (path-style)"
+        }
+      }
+    },
+    {
+      "id": "stage-clients-001",
+      "name": "Stage — clients",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        940,
+        304
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const fs = require('fs');\n// Lire le binaire depuis le noeud PG (S3 consomme le binary en sortie)\nconst pgItem = $('Requête PG — clients').first();\nconst buf = Buffer.from(pgItem.binary.tableData.data, 'base64');\nfs.mkdirSync('/staging/database', { recursive: true });\nfs.writeFileSync('/staging/database/clients.json', buf);\nconst rows = $input.first().json.rowCount ?? pgItem.json.rowCount;\nconsole.log('[WF-03] ✅ clients stagé : ' + rows + ' lignes');\nreturn [{ json: { status: 'success', table: 'clients', rows } }];"
+      }
+    },
+    {
+      "id": "pg-simple-articles-001",
+      "name": "Requête PG — articles",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1220,
+        304
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Connexion directe PostgreSQL via 10.14.219.2:5433\nconst { Client } = require('pg');\nconst client = new Client({\n  host    : '10.14.219.2',\n  port    : 5433,\n  database: 'database_extern_local',\n  user    : 'postgres',\n  password: 'postgres',\n  connectionTimeoutMillis: 10000,\n  statement_timeout      : 30000\n});\nawait client.connect();\nconst res = await client.query('SELECT row_to_json(t) AS r FROM \\\"articles\\\" t');\nawait client.end();\nconst rows = res.rows.map(row => row.r);\nconst payload = JSON.stringify({ data: rows });\nconst buf = Buffer.from(payload, 'utf8');\nconsole.log('[WF-03] PG articles : ' + rows.length + ' lignes');\nreturn [{\n  json: { table: 'articles', rowCount: rows.length, key: 'raw/database/articles/latest/articles.json' },\n  binary: { tableData: { data: buf.toString('base64'), mimeType: 'application/json', fileName: 'articles.json' } }\n}];"
+      }
+    },
+    {
+      "id": "s3-bronze-articles-001",
+      "name": "MinIO Bronze — articles",
+      "type": "n8n-nodes-base.s3",
+      "typeVersion": 1,
+      "position": [
+        1500,
+        304
+      ],
+      "parameters": {
+        "operation": "upload",
+        "bucketName": "bronze",
+        "fileName": "={{ $json.key }}",
+        "binaryPropertyName": "tableData",
+        "additionalFields": {
+          "acl": "private"
+        },
+        "binaryData": true
+      },
+      "credentials": {
+        "s3": {
+          "id": "Iqpe5A6QfeoXeIZR",
+          "name": "MinIO S3 (path-style)"
+        }
+      }
+    },
+    {
+      "id": "stage-articles-001",
+      "name": "Stage — articles",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1780,
+        304
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const fs = require('fs');\n// Lire le binaire depuis le noeud PG (S3 consomme le binary en sortie)\nconst pgItem = $('Requête PG — articles').first();\nconst buf = Buffer.from(pgItem.binary.tableData.data, 'base64');\nfs.mkdirSync('/staging/database', { recursive: true });\nfs.writeFileSync('/staging/database/articles.json', buf);\nconst rows = $input.first().json.rowCount ?? pgItem.json.rowCount;\nconsole.log('[WF-03] ✅ articles stagé : ' + rows + ' lignes');\nreturn [{ json: { status: 'success', table: 'articles', rows } }];"
+      }
+    },
+    {
+      "id": "pg-simple-salesshipmentheader-001",
+      "name": "Requête PG — salesshipmentheader",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2060,
+        304
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Connexion directe PostgreSQL via 10.14.219.2:5433\nconst { Client } = require('pg');\nconst client = new Client({\n  host    : '10.14.219.2',\n  port    : 5433,\n  database: 'database_extern_local',\n  user    : 'postgres',\n  password: 'postgres',\n  connectionTimeoutMillis: 10000,\n  statement_timeout      : 30000\n});\nawait client.connect();\nconst res = await client.query('SELECT row_to_json(t) AS r FROM \\\"salesshipmentheader\\\" t');\nawait client.end();\nconst rows = res.rows.map(row => row.r);\nconst payload = JSON.stringify({ data: rows });\nconst buf = Buffer.from(payload, 'utf8');\nconsole.log('[WF-03] PG salesshipmentheader : ' + rows.length + ' lignes');\nreturn [{\n  json: { table: 'salesshipmentheader', rowCount: rows.length, key: 'raw/database/salesshipmentheader/latest/salesshipmentheader.json' },\n  binary: { tableData: { data: buf.toString('base64'), mimeType: 'application/json', fileName: 'salesshipmentheader.json' } }\n}];"
+      }
+    },
+    {
+      "id": "s3-bronze-salesshipmentheader-001",
+      "name": "MinIO Bronze — salesshipmentheader",
+      "type": "n8n-nodes-base.s3",
+      "typeVersion": 1,
+      "position": [
+        2340,
+        304
+      ],
+      "parameters": {
+        "operation": "upload",
+        "bucketName": "bronze",
+        "fileName": "={{ $json.key }}",
+        "binaryPropertyName": "tableData",
+        "additionalFields": {
+          "acl": "private"
+        },
+        "binaryData": true
+      },
+      "credentials": {
+        "s3": {
+          "id": "Iqpe5A6QfeoXeIZR",
+          "name": "MinIO S3 (path-style)"
+        }
+      }
+    },
+    {
+      "id": "stage-salesshipmentheader-001",
+      "name": "Stage — salesshipmentheader",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2620,
+        304
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const fs = require('fs');\n// Lire le binaire depuis le noeud PG (S3 consomme le binary en sortie)\nconst pgItem = $('Requête PG — salesshipmentheader').first();\nconst buf = Buffer.from(pgItem.binary.tableData.data, 'base64');\nfs.mkdirSync('/staging/database', { recursive: true });\nfs.writeFileSync('/staging/database/salesshipmentheader.json', buf);\nconst rows = $input.first().json.rowCount ?? pgItem.json.rowCount;\nconsole.log('[WF-03] ✅ salesshipmentheader stagé : ' + rows + ' lignes');\nreturn [{ json: { status: 'success', table: 'salesshipmentheader', rows } }];"
+      }
+    },
+    {
+      "id": "pg-simple-salesshipmentline-001",
+      "name": "Requête PG — salesshipmentline",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2900,
+        304
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Connexion directe PostgreSQL via 10.14.219.2:5433\nconst { Client } = require('pg');\nconst client = new Client({\n  host    : '10.14.219.2',\n  port    : 5433,\n  database: 'database_extern_local',\n  user    : 'postgres',\n  password: 'postgres',\n  connectionTimeoutMillis: 10000,\n  statement_timeout      : 30000\n});\nawait client.connect();\nconst res = await client.query('SELECT row_to_json(t) AS r FROM \\\"salesshipmentline\\\" t');\nawait client.end();\nconst rows = res.rows.map(row => row.r);\nconst payload = JSON.stringify({ data: rows });\nconst buf = Buffer.from(payload, 'utf8');\nconsole.log('[WF-03] PG salesshipmentline : ' + rows.length + ' lignes');\nreturn [{\n  json: { table: 'salesshipmentline', rowCount: rows.length, key: 'raw/database/salesshipmentline/latest/salesshipmentline.json' },\n  binary: { tableData: { data: buf.toString('base64'), mimeType: 'application/json', fileName: 'salesshipmentline.json' } }\n}];"
+      }
+    },
+    {
+      "id": "s3-bronze-salesshipmentline-001",
+      "name": "MinIO Bronze — salesshipmentline",
+      "type": "n8n-nodes-base.s3",
+      "typeVersion": 1,
+      "position": [
+        3180,
+        304
+      ],
+      "parameters": {
+        "operation": "upload",
+        "bucketName": "bronze",
+        "fileName": "={{ $json.key }}",
+        "binaryPropertyName": "tableData",
+        "additionalFields": {
+          "acl": "private"
+        },
+        "binaryData": true
+      },
+      "credentials": {
+        "s3": {
+          "id": "Iqpe5A6QfeoXeIZR",
+          "name": "MinIO S3 (path-style)"
+        }
+      }
+    },
+    {
+      "id": "stage-salesshipmentline-001",
+      "name": "Stage — salesshipmentline",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3460,
+        304
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const fs = require('fs');\n// Lire le binaire depuis le noeud PG (S3 consomme le binary en sortie)\nconst pgItem = $('Requête PG — salesshipmentline').first();\nconst buf = Buffer.from(pgItem.binary.tableData.data, 'base64');\nfs.mkdirSync('/staging/database', { recursive: true });\nfs.writeFileSync('/staging/database/salesshipmentline.json', buf);\nconst rows = $input.first().json.rowCount ?? pgItem.json.rowCount;\nconsole.log('[WF-03] ✅ salesshipmentline stagé : ' + rows + ' lignes');\nreturn [{ json: { status: 'success', table: 'salesshipmentline', rows } }];"
+      }
+    },
+    {
+      "id": "9df62278-f2f6-4b57-ac32-c4838902a262",
+      "name": "Chargement terminé",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3740,
+        304
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "console.log('[WF-03] ✅ Toutes les tables PostgreSQL chargées');\nreturn [{ json: { status:'success', tables: ['clients','articles','salesshipmentheader','salesshipmentline'] } }];"
+      }
+    }
+  ],
+  "connections": {
+    "Schedule Toutes les 30 min": {
+      "main": [
+        [
+          {
+            "node": "Requête PG — clients",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Déclencheur sous-workflow": {
+      "main": [
+        [
+          {
+            "node": "Requête PG — clients",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Requête PG — clients": {
+      "main": [
+        [
+          {
+            "node": "MinIO Bronze — clients",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "MinIO Bronze — clients": {
+      "main": [
+        [
+          {
+            "node": "Stage — clients",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Stage — clients": {
+      "main": [
+        [
+          {
+            "node": "Requête PG — articles",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Requête PG — articles": {
+      "main": [
+        [
+          {
+            "node": "MinIO Bronze — articles",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "MinIO Bronze — articles": {
+      "main": [
+        [
+          {
+            "node": "Stage — articles",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Stage — articles": {
+      "main": [
+        [
+          {
+            "node": "Requête PG — salesshipmentheader",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Requête PG — salesshipmentheader": {
+      "main": [
+        [
+          {
+            "node": "MinIO Bronze — salesshipmentheader",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "MinIO Bronze — salesshipmentheader": {
+      "main": [
+        [
+          {
+            "node": "Stage — salesshipmentheader",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Stage — salesshipmentheader": {
+      "main": [
+        [
+          {
+            "node": "Requête PG — salesshipmentline",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Requête PG — salesshipmentline": {
+      "main": [
+        [
+          {
+            "node": "MinIO Bronze — salesshipmentline",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "MinIO Bronze — salesshipmentline": {
+      "main": [
+        [
+          {
+            "node": "Stage — salesshipmentline",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Stage — salesshipmentline": {
+      "main": [
+        [
+          {
+            "node": "Chargement terminé",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "staticData": {
+    "node:Schedule Toutes les 30 min": {
+      "recurrenceRules": []
+    }
+  },
+  "meta": null,
+  "pinData": {},
+  "versionId": "a1b2c3d4-0003-0000-b002-000000000001",
+  "activeVersionId": null,
+  "versionCounter": 61,
+  "triggerCount": 1,
+  "shared": [
+    {
+      "updatedAt": "2026-05-25T18:03:04.625Z",
+      "createdAt": "2026-05-25T18:03:04.625Z",
+      "role": "workflow:owner",
+      "workflowId": "wf03-pg-cdc-v2",
+      "projectId": "D6rGpkzR0jYLSPsp",
+      "project": {
+        "updatedAt": "2026-05-25T14:02:32.458Z",
+        "createdAt": "2026-05-24T21:29:20.943Z",
+        "id": "D6rGpkzR0jYLSPsp",
+        "name": "nyanu kodzo <nyanuks@s2.rpn.ch>",
+        "type": "personal",
+        "icon": null,
+        "description": null,
+        "creatorId": "7c7b6869-4924-4d3d-b16d-7d13908b06b2"
+      }
+    }
+  ],
+  "tags": [],
+  "activeVersion": {
+    "updatedAt": "2026-05-27T09:21:34.593Z",
+    "createdAt": "2026-05-27T09:21:34.593Z",
+    "versionId": "e5b5f928-c127-4197-8b4c-b3e7a3fed4e1",
+    "workflowId": "wf03-pg-cdc-v2",
+    "nodes": [
+      {
+        "id": "cde17bbe-2306-4796-aebf-85712fdd91c1",
+        "name": "Schedule Toutes les 30 min",
+        "type": "n8n-nodes-base.scheduleTrigger",
+        "typeVersion": 1.2,
+        "position": [
+          112,
+          304
+        ],
+        "parameters": {
+          "rule": {
+            "interval": [
+              {
+                "field": "cronExpression",
+                "expression": "*/30 * * * *"
+              }
+            ]
+          }
+        }
+      },
+      {
+        "id": "ewt-wf03-pg-cdc-v2-001",
+        "name": "Déclencheur sous-workflow",
+        "type": "n8n-nodes-base.executeWorkflowTrigger",
+        "typeVersion": 1,
+        "position": [
+          112,
+          512
+        ],
+        "parameters": {}
+      },
+      {
+        "id": "pg-simple-clients-001",
+        "name": "Requête PG — clients",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          380,
+          304
+        ],
+        "parameters": {
+          "mode": "runOnceForAllItems",
+          "jsCode": "// Connexion directe PostgreSQL via 10.14.219.2:5433\nconst { Client } = require('pg');\nconst client = new Client({\n  host    : '10.14.219.2',\n  port    : 5433,\n  database: 'database_extern_local',\n  user    : 'postgres',\n  password: 'postgres',\n  connectionTimeoutMillis: 10000,\n  statement_timeout      : 30000\n});\nawait client.connect();\nconst res = await client.query('SELECT row_to_json(t) AS r FROM \\\"clients\\\" t');\nawait client.end();\nconst rows = res.rows.map(row => row.r);\nconst payload = JSON.stringify({ data: rows });\nconst buf = Buffer.from(payload, 'utf8');\nconsole.log('[WF-03] PG clients : ' + rows.length + ' lignes');\nreturn [{\n  json: { table: 'clients', rowCount: rows.length, key: 'raw/database/clients/latest/clients.json' },\n  binary: { tableData: { data: buf.toString('base64'), mimeType: 'application/json', fileName: 'clients.json' } }\n}];"
+        }
+      },
+      {
+        "id": "s3-bronze-clients-001",
+        "name": "MinIO Bronze — clients",
+        "type": "n8n-nodes-base.s3",
+        "typeVersion": 1,
+        "position": [
+          660,
+          304
+        ],
+        "parameters": {
+          "operation": "upload",
+          "bucketName": "bronze",
+          "fileName": "={{ $json.key }}",
+          "binaryPropertyName": "tableData",
+          "additionalFields": {
+            "acl": "private"
+          }
+        },
+        "credentials": {
+          "s3": {
+            "id": "Iqpe5A6QfeoXeIZR",
+            "name": "MinIO S3 (path-style)"
+          }
+        }
+      },
+      {
+        "id": "stage-clients-001",
+        "name": "Stage — clients",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          940,
+          304
+        ],
+        "parameters": {
+          "mode": "runOnceForAllItems",
+          "jsCode": "const fs = require('fs');\n// Lire le binaire depuis le noeud PG (S3 consomme le binary en sortie)\nconst pgItem = $('Requête PG — clients').first();\nconst buf = Buffer.from(pgItem.binary.tableData.data, 'base64');\nfs.mkdirSync('/staging/database', { recursive: true });\nfs.writeFileSync('/staging/database/clients.json', buf);\nconst rows = $input.first().json.rowCount ?? pgItem.json.rowCount;\nconsole.log('[WF-03] ✅ clients stagé : ' + rows + ' lignes');\nreturn [{ json: { status: 'success', table: 'clients', rows } }];"
+        }
+      },
+      {
+        "id": "pg-simple-articles-001",
+        "name": "Requête PG — articles",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          1220,
+          304
+        ],
+        "parameters": {
+          "mode": "runOnceForAllItems",
+          "jsCode": "// Connexion directe PostgreSQL via 10.14.219.2:5433\nconst { Client } = require('pg');\nconst client = new Client({\n  host    : '10.14.219.2',\n  port    : 5433,\n  database: 'database_extern_local',\n  user    : 'postgres',\n  password: 'postgres',\n  connectionTimeoutMillis: 10000,\n  statement_timeout      : 30000\n});\nawait client.connect();\nconst res = await client.query('SELECT row_to_json(t) AS r FROM \\\"articles\\\" t');\nawait client.end();\nconst rows = res.rows.map(row => row.r);\nconst payload = JSON.stringify({ data: rows });\nconst buf = Buffer.from(payload, 'utf8');\nconsole.log('[WF-03] PG articles : ' + rows.length + ' lignes');\nreturn [{\n  json: { table: 'articles', rowCount: rows.length, key: 'raw/database/articles/latest/articles.json' },\n  binary: { tableData: { data: buf.toString('base64'), mimeType: 'application/json', fileName: 'articles.json' } }\n}];"
+        }
+      },
+      {
+        "id": "s3-bronze-articles-001",
+        "name": "MinIO Bronze — articles",
+        "type": "n8n-nodes-base.s3",
+        "typeVersion": 1,
+        "position": [
+          1500,
+          304
+        ],
+        "parameters": {
+          "operation": "upload",
+          "bucketName": "bronze",
+          "fileName": "={{ $json.key }}",
+          "binaryPropertyName": "tableData",
+          "additionalFields": {
+            "acl": "private"
+          }
+        },
+        "credentials": {
+          "s3": {
+            "id": "Iqpe5A6QfeoXeIZR",
+            "name": "MinIO S3 (path-style)"
+          }
+        }
+      },
+      {
+        "id": "stage-articles-001",
+        "name": "Stage — articles",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          1780,
+          304
+        ],
+        "parameters": {
+          "mode": "runOnceForAllItems",
+          "jsCode": "const fs = require('fs');\n// Lire le binaire depuis le noeud PG (S3 consomme le binary en sortie)\nconst pgItem = $('Requête PG — articles').first();\nconst buf = Buffer.from(pgItem.binary.tableData.data, 'base64');\nfs.mkdirSync('/staging/database', { recursive: true });\nfs.writeFileSync('/staging/database/articles.json', buf);\nconst rows = $input.first().json.rowCount ?? pgItem.json.rowCount;\nconsole.log('[WF-03] ✅ articles stagé : ' + rows + ' lignes');\nreturn [{ json: { status: 'success', table: 'articles', rows } }];"
+        }
+      },
+      {
+        "id": "pg-simple-salesshipmentheader-001",
+        "name": "Requête PG — salesshipmentheader",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          2060,
+          304
+        ],
+        "parameters": {
+          "mode": "runOnceForAllItems",
+          "jsCode": "// Connexion directe PostgreSQL via 10.14.219.2:5433\nconst { Client } = require('pg');\nconst client = new Client({\n  host    : '10.14.219.2',\n  port    : 5433,\n  database: 'database_extern_local',\n  user    : 'postgres',\n  password: 'postgres',\n  connectionTimeoutMillis: 10000,\n  statement_timeout      : 30000\n});\nawait client.connect();\nconst res = await client.query('SELECT row_to_json(t) AS r FROM \\\"salesshipmentheader\\\" t');\nawait client.end();\nconst rows = res.rows.map(row => row.r);\nconst payload = JSON.stringify({ data: rows });\nconst buf = Buffer.from(payload, 'utf8');\nconsole.log('[WF-03] PG salesshipmentheader : ' + rows.length + ' lignes');\nreturn [{\n  json: { table: 'salesshipmentheader', rowCount: rows.length, key: 'raw/database/salesshipmentheader/latest/salesshipmentheader.json' },\n  binary: { tableData: { data: buf.toString('base64'), mimeType: 'application/json', fileName: 'salesshipmentheader.json' } }\n}];"
+        }
+      },
+      {
+        "id": "s3-bronze-salesshipmentheader-001",
+        "name": "MinIO Bronze — salesshipmentheader",
+        "type": "n8n-nodes-base.s3",
+        "typeVersion": 1,
+        "position": [
+          2340,
+          304
+        ],
+        "parameters": {
+          "operation": "upload",
+          "bucketName": "bronze",
+          "fileName": "={{ $json.key }}",
+          "binaryPropertyName": "tableData",
+          "additionalFields": {
+            "acl": "private"
+          }
+        },
+        "credentials": {
+          "s3": {
+            "id": "Iqpe5A6QfeoXeIZR",
+            "name": "MinIO S3 (path-style)"
+          }
+        }
+      },
+      {
+        "id": "stage-salesshipmentheader-001",
+        "name": "Stage — salesshipmentheader",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          2620,
+          304
+        ],
+        "parameters": {
+          "mode": "runOnceForAllItems",
+          "jsCode": "const fs = require('fs');\n// Lire le binaire depuis le noeud PG (S3 consomme le binary en sortie)\nconst pgItem = $('Requête PG — salesshipmentheader').first();\nconst buf = Buffer.from(pgItem.binary.tableData.data, 'base64');\nfs.mkdirSync('/staging/database', { recursive: true });\nfs.writeFileSync('/staging/database/salesshipmentheader.json', buf);\nconst rows = $input.first().json.rowCount ?? pgItem.json.rowCount;\nconsole.log('[WF-03] ✅ salesshipmentheader stagé : ' + rows + ' lignes');\nreturn [{ json: { status: 'success', table: 'salesshipmentheader', rows } }];"
+        }
+      },
+      {
+        "id": "pg-simple-salesshipmentline-001",
+        "name": "Requête PG — salesshipmentline",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          2900,
+          304
+        ],
+        "parameters": {
+          "mode": "runOnceForAllItems",
+          "jsCode": "// Connexion directe PostgreSQL via 10.14.219.2:5433\nconst { Client } = require('pg');\nconst client = new Client({\n  host    : '10.14.219.2',\n  port    : 5433,\n  database: 'database_extern_local',\n  user    : 'postgres',\n  password: 'postgres',\n  connectionTimeoutMillis: 10000,\n  statement_timeout      : 30000\n});\nawait client.connect();\nconst res = await client.query('SELECT row_to_json(t) AS r FROM \\\"salesshipmentline\\\" t');\nawait client.end();\nconst rows = res.rows.map(row => row.r);\nconst payload = JSON.stringify({ data: rows });\nconst buf = Buffer.from(payload, 'utf8');\nconsole.log('[WF-03] PG salesshipmentline : ' + rows.length + ' lignes');\nreturn [{\n  json: { table: 'salesshipmentline', rowCount: rows.length, key: 'raw/database/salesshipmentline/latest/salesshipmentline.json' },\n  binary: { tableData: { data: buf.toString('base64'), mimeType: 'application/json', fileName: 'salesshipmentline.json' } }\n}];"
+        }
+      },
+      {
+        "id": "s3-bronze-salesshipmentline-001",
+        "name": "MinIO Bronze — salesshipmentline",
+        "type": "n8n-nodes-base.s3",
+        "typeVersion": 1,
+        "position": [
+          3180,
+          304
+        ],
+        "parameters": {
+          "operation": "upload",
+          "bucketName": "bronze",
+          "fileName": "={{ $json.key }}",
+          "binaryPropertyName": "tableData",
+          "additionalFields": {
+            "acl": "private"
+          }
+        },
+        "credentials": {
+          "s3": {
+            "id": "Iqpe5A6QfeoXeIZR",
+            "name": "MinIO S3 (path-style)"
+          }
+        }
+      },
+      {
+        "id": "stage-salesshipmentline-001",
+        "name": "Stage — salesshipmentline",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          3460,
+          304
+        ],
+        "parameters": {
+          "mode": "runOnceForAllItems",
+          "jsCode": "const fs = require('fs');\n// Lire le binaire depuis le noeud PG (S3 consomme le binary en sortie)\nconst pgItem = $('Requête PG — salesshipmentline').first();\nconst buf = Buffer.from(pgItem.binary.tableData.data, 'base64');\nfs.mkdirSync('/staging/database', { recursive: true });\nfs.writeFileSync('/staging/database/salesshipmentline.json', buf);\nconst rows = $input.first().json.rowCount ?? pgItem.json.rowCount;\nconsole.log('[WF-03] ✅ salesshipmentline stagé : ' + rows + ' lignes');\nreturn [{ json: { status: 'success', table: 'salesshipmentline', rows } }];"
+        }
+      },
+      {
+        "id": "9df62278-f2f6-4b57-ac32-c4838902a262",
+        "name": "Chargement terminé",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          3740,
+          304
+        ],
+        "parameters": {
+          "mode": "runOnceForAllItems",
+          "jsCode": "console.log('[WF-03] ✅ Toutes les tables PostgreSQL chargées');\nreturn [{ json: { status:'success', tables: ['clients','articles','salesshipmentheader','salesshipmentline'] } }];"
+        }
+      }
+    ],
+    "connections": {
+      "Schedule Toutes les 30 min": {
+        "main": [
+          [
+            {
+              "node": "Requête PG — clients",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Déclencheur sous-workflow": {
+        "main": [
+          [
+            {
+              "node": "Requête PG — clients",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Requête PG — clients": {
+        "main": [
+          [
+            {
+              "node": "MinIO Bronze — clients",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "MinIO Bronze — clients": {
+        "main": [
+          [
+            {
+              "node": "Stage — clients",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Stage — clients": {
+        "main": [
+          [
+            {
+              "node": "Requête PG — articles",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Requête PG — articles": {
+        "main": [
+          [
+            {
+              "node": "MinIO Bronze — articles",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "MinIO Bronze — articles": {
+        "main": [
+          [
+            {
+              "node": "Stage — articles",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Stage — articles": {
+        "main": [
+          [
+            {
+              "node": "Requête PG — salesshipmentheader",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Requête PG — salesshipmentheader": {
+        "main": [
+          [
+            {
+              "node": "MinIO Bronze — salesshipmentheader",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "MinIO Bronze — salesshipmentheader": {
+        "main": [
+          [
+            {
+              "node": "Stage — salesshipmentheader",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Stage — salesshipmentheader": {
+        "main": [
+          [
+            {
+              "node": "Requête PG — salesshipmentline",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Requête PG — salesshipmentline": {
+        "main": [
+          [
+            {
+              "node": "MinIO Bronze — salesshipmentline",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "MinIO Bronze — salesshipmentline": {
+        "main": [
+          [
+            {
+              "node": "Stage — salesshipmentline",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Stage — salesshipmentline": {
+        "main": [
+          [
+            {
+              "node": "Chargement terminé",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      }
+    },
+    "authors": "nyanu kodzo",
+    "name": null,
+    "description": null,
+    "autosaved": false,
+    "workflowPublishHistory": [
+      {
+        "createdAt": "2026-05-27T09:21:34.669Z",
+        "id": 54,
+        "workflowId": "wf03-pg-cdc-v2",
+        "versionId": "e5b5f928-c127-4197-8b4c-b3e7a3fed4e1",
+        "event": "activated",
+        "userId": "7c7b6869-4924-4d3d-b16d-7d13908b06b2"
+      },
+      {
+        "createdAt": "2026-05-27T09:21:34.638Z",
+        "id": 53,
+        "workflowId": "wf03-pg-cdc-v2",
+        "versionId": "e5b5f928-c127-4197-8b4c-b3e7a3fed4e1",
+        "event": "deactivated",
+        "userId": "7c7b6869-4924-4d3d-b16d-7d13908b06b2"
+      }
+    ]
+  }
+}

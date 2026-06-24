@@ -1,0 +1,46 @@
+{
+  "metadataBaseFolder" : "${PROJECT_HOME}/metadata",
+  "unitTestsBasePath" : "${PROJECT_HOME}",
+  "dataSetsCsvFolder" : "${PROJECT_HOME}/datasets",
+  "enforcingExecutionInHome" : true,
+  "parentProjectName" : "default",
+  "config" : {
+    "variables" : [ {
+      "name" : "MINIO_ENDPOINT",
+      "value" : "http://172.18.0.3:9000",
+      "description" : "MinIO server endpoint (IP)"
+    }, {
+      "name" : "MINIO_ACCESS_KEY",
+      "value" : "nyanu",
+      "description" : "MinIO access key"
+    }, {
+      "name" : "MINIO_SECRET_KEY",
+      "value" : "nyanu1234",
+      "description" : "MinIO secret key"
+    }, {
+      "name" : "PG_HOST",
+      "value" : "dwh_postgres",
+      "description" : "PostgreSQL Gold DWH host"
+    }, {
+      "name" : "PG_PORT",
+      "value" : "5432",
+      "description" : "PostgreSQL Gold DWH port"
+    }, {
+      "name" : "PG_DATABASE",
+      "value" : "data_warehouse_gold",
+      "description" : "PostgreSQL Gold database"
+    }, {
+      "name" : "PG_USER",
+      "value" : "nyanu",
+      "description" : "PostgreSQL Gold user"
+    }, {
+      "name" : "PG_PASSWORD",
+      "value" : "nyanu",
+      "description" : "PostgreSQL Gold password"
+    }, {
+      "name" : "TODAY",
+      "value" : "${java.util.Date()}",
+      "description" : "Today's date for file paths"
+    } ]
+  }
+}

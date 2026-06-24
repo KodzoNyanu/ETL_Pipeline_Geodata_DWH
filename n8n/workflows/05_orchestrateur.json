@@ -1,0 +1,774 @@
+{
+  "updatedAt": "2026-05-27T10:30:35.549Z",
+  "createdAt": "2026-05-25T18:03:12.016Z",
+  "id": "wf05-orchestrateur-v1",
+  "name": "05 - Orchestrateur | Pipeline Complet ETL",
+  "description": null,
+  "active": true,
+  "isArchived": false,
+  "nodes": [
+    {
+      "id": "check-sources-bindmount-001",
+      "name": "Vérifier fichiers sources",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        340,
+        380
+      ],
+      "parameters": {
+        "jsCode": "// Vérifie la présence des fichiers plats dans le bind mount /data_sources/\n// avant de déclencher le pipeline complet.\nconst fs = require('fs');\nconst REQUIRED = [\n  { path: '/data_sources/data.csv',  label: 'data.csv'  },\n  { path: '/data_sources/data.json', label: 'data.json' }\n];\n\nconst missing = [];\nconst present = [];\n\nfor (const f of REQUIRED) {\n  if (fs.existsSync(f.path)) {\n    const stats = fs.statSync(f.path);\n    present.push({ file: f.label, size: stats.size, modified: stats.mtime.toISOString() });\n  } else {\n    missing.push(f.label);\n  }\n}\n\nconst allPresent = missing.length === 0;\nconsole.log(`[WF-05] Fichiers sources : ${present.length}/${REQUIRED.length} présents ${allPresent ? '✅' : '❌'}`);\nif (!allPresent) console.error('[WF-05] Fichiers manquants : ' + missing.join(', '));\n\nreturn [{ json: { allPresent, present, missing, checkedAt: new Date().toISOString() } }];"
+      }
+    },
+    {
+      "id": "check-sources-if-001",
+      "name": "Fichiers présents ?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        580,
+        380
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "aa1b2c3d-4e5f-6789-abcd-ef0123456789",
+              "leftValue": "={{ $json.allPresent }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "sources-missing-alert-001",
+      "name": "Fichiers manquants — Alerter",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        820,
+        500
+      ],
+      "parameters": {
+        "jsCode": "const e = $input.first().json;\nconsole.error('[WF-05] ❌ Pipeline interrompu — fichiers sources manquants dans /data_sources/ : ' + e.missing.join(', '));\nconsole.error('[WF-05] Vérifier le bind mount Docker : D:\\\\Projet de SI → /data_sources/');\nreturn [{ json: { status: 'ABORTED', reason: 'missing_source_files', missing: e.missing, checkedAt: e.checkedAt } }];"
+      }
+    },
+    {
+      "id": "4f725e84-bd63-4913-b741-b074b91aaa3a",
+      "name": "Exécuter WF-01 (CSV)",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        820,
+        260
+      ],
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "wf01-csv-cdc-v2",
+          "mode": "id"
+        },
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      }
+    },
+    {
+      "id": "39f2f39e-6e75-4c77-bf07-955675b6e272",
+      "name": "Exécuter WF-02 (JSON)",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        1060,
+        260
+      ],
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "wf02-json-cdc-v2",
+          "mode": "id"
+        },
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      }
+    },
+    {
+      "id": "27026a93-71be-4711-9df4-17c101708290",
+      "name": "Exécuter WF-03 (PG)",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        1300,
+        260
+      ],
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "wf03-pg-cdc-v2",
+          "mode": "id"
+        },
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      }
+    },
+    {
+      "id": "49a31ff6-d770-49ed-ba69-1d305d24bf24",
+      "name": "Exécuter WF-04 (Distances)",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        1540,
+        260
+      ],
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "wf04-distances-cdc-v2",
+          "mode": "id"
+        },
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      }
+    },
+    {
+      "id": "464e77c7-877f-474f-a984-e75e3ce1ae8f",
+      "name": "Vérifier résultats",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1780,
+        260
+      ],
+      "parameters": {
+        "jsCode": "const r = $input.first().json;\nconst ok = !r.error && r.executionStatus !== 'error';\nconsole.log(`[WF-05] Vérification finale : allOk=${ok}`);\nreturn [{ json: { allOk: ok } }];\n"
+      }
+    },
+    {
+      "id": "8e4afe0b-e02c-41c8-a16a-dd0826068666",
+      "name": "Tous OK ?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        2020,
+        260
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "52a9e26a-da88-44d0-8c20-e486d7435e0d",
+              "leftValue": "={{ $json.allOk }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "b4c24003-fa4d-4a55-adb2-3ce756e1a9a7",
+      "name": "Succès complet",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2500,
+        140
+      ],
+      "parameters": {
+        "jsCode": "const r = $input.first().json;\nconsole.log(`[WF-05] ✅ ETL Gold terminé (rc=${r.returncode}) | ${r.ended_at}`);\nreturn [{ json: { status:'ETL_COMPLETE', returncode: r.returncode, ended_at: r.ended_at } }];\n"
+      }
+    },
+    {
+      "id": "3a67dfcb-d238-43f0-89dc-82607a163d0c",
+      "name": "Erreur — Alerter",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2260,
+        380
+      ],
+      "parameters": {
+        "jsCode": "const e = $input.first().json;\nconsole.error('[WF-05] ❌ Erreur détectée dans le pipeline — vérifier les logs n8n');\nreturn [{ json: { status:'ERROR', detail: e } }];\n"
+      }
+    },
+    {
+      "id": "ewt-wf05-001",
+      "name": "Déclencheur sous-workflow",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1,
+      "position": [
+        100,
+        560
+      ],
+      "parameters": {}
+    }
+  ],
+  "connections": {
+    "Vérifier fichiers sources": {
+      "main": [
+        [
+          {
+            "node": "Fichiers présents ?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fichiers présents ?": {
+      "main": [
+        [
+          {
+            "node": "Exécuter WF-01 (CSV)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Fichiers manquants — Alerter",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Exécuter WF-01 (CSV)": {
+      "main": [
+        [
+          {
+            "node": "Exécuter WF-02 (JSON)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Exécuter WF-02 (JSON)": {
+      "main": [
+        [
+          {
+            "node": "Exécuter WF-03 (PG)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Exécuter WF-03 (PG)": {
+      "main": [
+        [
+          {
+            "node": "Exécuter WF-04 (Distances)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Exécuter WF-04 (Distances)": {
+      "main": [
+        [
+          {
+            "node": "Vérifier résultats",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Vérifier résultats": {
+      "main": [
+        [
+          {
+            "node": "Tous OK ?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tous OK ?": {
+      "main": [
+        [
+          {
+            "node": "Succès complet",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Erreur — Alerter",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Déclencheur sous-workflow": {
+      "main": [
+        [
+          {
+            "node": "Vérifier fichiers sources",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "staticData": null,
+  "meta": null,
+  "pinData": {},
+  "versionId": "a1b2c3d4-0005-0000-b003-000000000001",
+  "activeVersionId": null,
+  "versionCounter": 42,
+  "triggerCount": 0,
+  "shared": [
+    {
+      "updatedAt": "2026-05-25T18:03:12.022Z",
+      "createdAt": "2026-05-25T18:03:12.022Z",
+      "role": "workflow:owner",
+      "workflowId": "wf05-orchestrateur-v1",
+      "projectId": "D6rGpkzR0jYLSPsp",
+      "project": {
+        "updatedAt": "2026-05-25T14:02:32.458Z",
+        "createdAt": "2026-05-24T21:29:20.943Z",
+        "id": "D6rGpkzR0jYLSPsp",
+        "name": "nyanu kodzo <nyanuks@s2.rpn.ch>",
+        "type": "personal",
+        "icon": null,
+        "description": null,
+        "creatorId": "7c7b6869-4924-4d3d-b16d-7d13908b06b2"
+      }
+    }
+  ],
+  "tags": [],
+  "activeVersion": {
+    "updatedAt": "2026-05-27T10:30:35.550Z",
+    "createdAt": "2026-05-27T10:30:35.550Z",
+    "versionId": "0fce825e-6db8-4691-a821-c17261cfef96",
+    "workflowId": "wf05-orchestrateur-v1",
+    "nodes": [
+      {
+        "id": "check-sources-bindmount-001",
+        "name": "Vérifier fichiers sources",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          340,
+          380
+        ],
+        "parameters": {
+          "jsCode": "// Vérifie la présence des fichiers plats dans le bind mount /data_sources/\n// avant de déclencher le pipeline complet.\nconst fs = require('fs');\nconst REQUIRED = [\n  { path: '/data_sources/data.csv',  label: 'data.csv'  },\n  { path: '/data_sources/data.json', label: 'data.json' }\n];\n\nconst missing = [];\nconst present = [];\n\nfor (const f of REQUIRED) {\n  if (fs.existsSync(f.path)) {\n    const stats = fs.statSync(f.path);\n    present.push({ file: f.label, size: stats.size, modified: stats.mtime.toISOString() });\n  } else {\n    missing.push(f.label);\n  }\n}\n\nconst allPresent = missing.length === 0;\nconsole.log(`[WF-05] Fichiers sources : ${present.length}/${REQUIRED.length} présents ${allPresent ? '✅' : '❌'}`);\nif (!allPresent) console.error('[WF-05] Fichiers manquants : ' + missing.join(', '));\n\nreturn [{ json: { allPresent, present, missing, checkedAt: new Date().toISOString() } }];"
+        }
+      },
+      {
+        "id": "check-sources-if-001",
+        "name": "Fichiers présents ?",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 2,
+        "position": [
+          580,
+          380
+        ],
+        "parameters": {
+          "conditions": {
+            "options": {
+              "caseSensitive": true,
+              "leftValue": "",
+              "typeValidation": "strict"
+            },
+            "conditions": [
+              {
+                "id": "aa1b2c3d-4e5f-6789-abcd-ef0123456789",
+                "leftValue": "={{ $json.allPresent }}",
+                "rightValue": true,
+                "operator": {
+                  "type": "boolean",
+                  "operation": "true"
+                }
+              }
+            ],
+            "combinator": "and"
+          }
+        }
+      },
+      {
+        "id": "sources-missing-alert-001",
+        "name": "Fichiers manquants — Alerter",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          820,
+          500
+        ],
+        "parameters": {
+          "jsCode": "const e = $input.first().json;\nconsole.error('[WF-05] ❌ Pipeline interrompu — fichiers sources manquants dans /data_sources/ : ' + e.missing.join(', '));\nconsole.error('[WF-05] Vérifier le bind mount Docker : D:\\\\Projet de SI → /data_sources/');\nreturn [{ json: { status: 'ABORTED', reason: 'missing_source_files', missing: e.missing, checkedAt: e.checkedAt } }];"
+        }
+      },
+      {
+        "id": "4f725e84-bd63-4913-b741-b074b91aaa3a",
+        "name": "Exécuter WF-01 (CSV)",
+        "type": "n8n-nodes-base.executeWorkflow",
+        "typeVersion": 1.2,
+        "position": [
+          820,
+          260
+        ],
+        "parameters": {
+          "source": "database",
+          "workflowId": {
+            "__rl": true,
+            "value": "wf01-csv-cdc-v2",
+            "mode": "id"
+          },
+          "options": {
+            "waitForSubWorkflow": true
+          }
+        }
+      },
+      {
+        "id": "39f2f39e-6e75-4c77-bf07-955675b6e272",
+        "name": "Exécuter WF-02 (JSON)",
+        "type": "n8n-nodes-base.executeWorkflow",
+        "typeVersion": 1.2,
+        "position": [
+          1060,
+          260
+        ],
+        "parameters": {
+          "source": "database",
+          "workflowId": {
+            "__rl": true,
+            "value": "wf02-json-cdc-v2",
+            "mode": "id"
+          },
+          "options": {
+            "waitForSubWorkflow": true
+          }
+        }
+      },
+      {
+        "id": "27026a93-71be-4711-9df4-17c101708290",
+        "name": "Exécuter WF-03 (PG)",
+        "type": "n8n-nodes-base.executeWorkflow",
+        "typeVersion": 1.2,
+        "position": [
+          1300,
+          260
+        ],
+        "parameters": {
+          "source": "database",
+          "workflowId": {
+            "__rl": true,
+            "value": "wf03-pg-cdc-v2",
+            "mode": "id"
+          },
+          "options": {
+            "waitForSubWorkflow": true
+          }
+        }
+      },
+      {
+        "id": "49a31ff6-d770-49ed-ba69-1d305d24bf24",
+        "name": "Exécuter WF-04 (Distances)",
+        "type": "n8n-nodes-base.executeWorkflow",
+        "typeVersion": 1.2,
+        "position": [
+          1540,
+          260
+        ],
+        "parameters": {
+          "source": "database",
+          "workflowId": {
+            "__rl": true,
+            "value": "wf04-distances-cdc-v2",
+            "mode": "id"
+          },
+          "options": {
+            "waitForSubWorkflow": true
+          }
+        }
+      },
+      {
+        "id": "464e77c7-877f-474f-a984-e75e3ce1ae8f",
+        "name": "Vérifier résultats",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          1780,
+          260
+        ],
+        "parameters": {
+          "jsCode": "const r = $input.first().json;\nconst ok = !r.error && r.executionStatus !== 'error';\nconsole.log(`[WF-05] Vérification finale : allOk=${ok}`);\nreturn [{ json: { allOk: ok } }];\n"
+        }
+      },
+      {
+        "id": "8e4afe0b-e02c-41c8-a16a-dd0826068666",
+        "name": "Tous OK ?",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 2,
+        "position": [
+          2020,
+          260
+        ],
+        "parameters": {
+          "conditions": {
+            "options": {
+              "caseSensitive": true,
+              "leftValue": "",
+              "typeValidation": "strict"
+            },
+            "conditions": [
+              {
+                "id": "52a9e26a-da88-44d0-8c20-e486d7435e0d",
+                "leftValue": "={{ $json.allOk }}",
+                "rightValue": true,
+                "operator": {
+                  "type": "boolean",
+                  "operation": "true"
+                }
+              }
+            ],
+            "combinator": "and"
+          }
+        }
+      },
+      {
+        "id": "f46b24a6-1fe1-4d6c-9889-68ee9293a53a",
+        "name": "Déclencher Apache Hop (ETL Gold)",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          2260,
+          140
+        ],
+        "parameters": {
+          "url": "http://172.18.0.2:9999/run-etl",
+          "method": "POST",
+          "options": {
+            "timeout": 300000
+          }
+        }
+      },
+      {
+        "id": "b4c24003-fa4d-4a55-adb2-3ce756e1a9a7",
+        "name": "Succès complet",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          2500,
+          140
+        ],
+        "parameters": {
+          "jsCode": "const r = $input.first().json;\nconsole.log(`[WF-05] ✅ ETL Gold terminé (rc=${r.returncode}) | ${r.ended_at}`);\nreturn [{ json: { status:'ETL_COMPLETE', returncode: r.returncode, ended_at: r.ended_at } }];\n"
+        }
+      },
+      {
+        "id": "3a67dfcb-d238-43f0-89dc-82607a163d0c",
+        "name": "Erreur — Alerter",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          2260,
+          380
+        ],
+        "parameters": {
+          "jsCode": "const e = $input.first().json;\nconsole.error('[WF-05] ❌ Erreur détectée dans le pipeline — vérifier les logs n8n');\nreturn [{ json: { status:'ERROR', detail: e } }];\n"
+        }
+      },
+      {
+        "id": "ewt-wf05-001",
+        "name": "Déclencheur sous-workflow",
+        "type": "n8n-nodes-base.executeWorkflowTrigger",
+        "typeVersion": 1,
+        "position": [
+          100,
+          560
+        ],
+        "parameters": {}
+      }
+    ],
+    "connections": {
+      "Vérifier fichiers sources": {
+        "main": [
+          [
+            {
+              "node": "Fichiers présents ?",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Fichiers présents ?": {
+        "main": [
+          [
+            {
+              "node": "Exécuter WF-01 (CSV)",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Fichiers manquants — Alerter",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Exécuter WF-01 (CSV)": {
+        "main": [
+          [
+            {
+              "node": "Exécuter WF-02 (JSON)",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Exécuter WF-02 (JSON)": {
+        "main": [
+          [
+            {
+              "node": "Exécuter WF-03 (PG)",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Exécuter WF-03 (PG)": {
+        "main": [
+          [
+            {
+              "node": "Exécuter WF-04 (Distances)",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Exécuter WF-04 (Distances)": {
+        "main": [
+          [
+            {
+              "node": "Vérifier résultats",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Vérifier résultats": {
+        "main": [
+          [
+            {
+              "node": "Tous OK ?",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Tous OK ?": {
+        "main": [
+          [
+            {
+              "node": "Déclencher Apache Hop (ETL Gold)",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Erreur — Alerter",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Déclencher Apache Hop (ETL Gold)": {
+        "main": [
+          [
+            {
+              "node": "Succès complet",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Déclencheur sous-workflow": {
+        "main": [
+          [
+            {
+              "node": "Vérifier fichiers sources",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      }
+    },
+    "authors": "nyanu kodzo",
+    "name": null,
+    "description": null,
+    "autosaved": false,
+    "workflowPublishHistory": [
+      {
+        "createdAt": "2026-05-27T10:30:35.620Z",
+        "id": 60,
+        "workflowId": "wf05-orchestrateur-v1",
+        "versionId": "0fce825e-6db8-4691-a821-c17261cfef96",
+        "event": "activated",
+        "userId": "7c7b6869-4924-4d3d-b16d-7d13908b06b2"
+      },
+      {
+        "createdAt": "2026-05-27T10:30:35.599Z",
+        "id": 59,
+        "workflowId": "wf05-orchestrateur-v1",
+        "versionId": "0fce825e-6db8-4691-a821-c17261cfef96",
+        "event": "deactivated",
+        "userId": "7c7b6869-4924-4d3d-b16d-7d13908b06b2"
+      }
+    ]
+  }
+}

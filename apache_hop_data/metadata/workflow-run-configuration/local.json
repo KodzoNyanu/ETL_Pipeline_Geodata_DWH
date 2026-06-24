@@ -1,0 +1,11 @@
+{
+  "engineRunConfiguration": {
+    "Local": {
+      "run_configuration": "local"
+    }
+  },
+  "name": "local",
+  "configurationVariables": [],
+  "description": "Local workflow execution",
+  "defaultSelection": true
+}

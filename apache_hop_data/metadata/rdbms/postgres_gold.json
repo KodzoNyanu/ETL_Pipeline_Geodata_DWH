@@ -1,0 +1,24 @@
+{
+  "rdbms": {
+    "POSTGRESQL": {
+      "databaseName": "data_warehouse_gold",
+      "pluginId": "POSTGRESQL",
+      "accessType": 0,
+      "hostname": "dwh_postgres",
+      "password": "nyanu",
+      "pluginName": "PostgreSQL",
+      "port": "5432",
+      "attributes": {
+        "SUPPORTS_TIMESTAMP_DATA_TYPE": "Y",
+        "QUOTE_ALL_FIELDS": "N",
+        "SUPPORTS_BOOLEAN_DATA_TYPE": "Y",
+        "FORCE_IDENTIFIERS_TO_LOWERCASE": "N",
+        "PRESERVE_RESERVED_WORD_CASE": "Y",
+        "FORCE_IDENTIFIERS_TO_UPPERCASE": "N",
+        "PREFERRED_SCHEMA_NAME": "public"
+      },
+      "username": "nyanu"
+    }
+  },
+  "name": "postgres_gold"
+}
